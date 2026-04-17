@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const root = path.resolve(__dirname, "..");
-const version = "0.2.0";
+const version = "0.3.0";
 
 function run(script, args) {
   const result = spawnSync(process.execPath, [path.join(root, "scripts", script), ...args], {

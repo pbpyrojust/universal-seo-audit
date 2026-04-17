@@ -2,8 +2,8 @@
   "name": "universal-seo-audit",
   "private": true,
   "type": "module",
-  "version": "0.2.0",
-  "description": "Technical SEO audit CLI for development, staging, protected, and noindex sites using Playwright. Phase 2 adds link validation, duplicate metadata clustering, image SEO, and thin-content checks.",
+  "version": "0.3.0",
+  "description": "Technical SEO audit CLI for development, staging, protected, and noindex sites using Playwright. Phase 3 adds structured data, hreflang/lang/viewport, and lightweight render diagnostics.",
   "author": "Justin Adams (https://justwhat.net)",
   "license": "MIT",
   "scripts": {

@@ -159,6 +159,13 @@ function classifyIssue(type){
     thin_content:["moderate","P2-Medium","Medium"],
     image_alt_missing:["moderate","P2-Medium","Medium"],
     image_alt_filename:["minor","P3-Low","Low"],
+    missing_lang:["moderate","P2-Medium","Medium"],
+    missing_viewport:["moderate","P2-Medium","Medium"],
+    invalid_jsonld:["moderate","P2-Medium","Medium"],
+    noindex_header:["moderate","P2-Medium","Medium"],
+    hreflang_invalid:["moderate","P2-Medium","Medium"],
+    heavy_dom:["minor","P3-Low","Low"],
+    high_resource_count:["minor","P3-Low","Low"],
     scan_error:["serious","P1-High","High"],
   };
   return map[type] || ["moderate","P2-Medium","Medium"];
@@ -205,6 +212,8 @@ async function extractSeoData(page, pageUrl) {
   return await page.evaluate((pageUrlInBrowser) => {
     const canonicals = Array.from(document.querySelectorAll('link[rel="canonical"]')).map((n) => n.href || n.getAttribute("href") || "");
     const robotsMeta = document.querySelector('meta[name="robots" i]')?.getAttribute("content") || "";
+    const viewportMeta = document.querySelector('meta[name="viewport" i]')?.getAttribute("content") || "";
+    const htmlLang = document.documentElement?.getAttribute("lang") || "";
     const title = document.title || "";
     const desc = document.querySelector('meta[name="description" i]')?.getAttribute("content") || "";
     const h1s = Array.from(document.querySelectorAll("h1")).map((n) => n.textContent?.trim() || "");
@@ -216,6 +225,38 @@ async function extractSeoData(page, pageUrl) {
       alt: img.getAttribute("alt") || "",
       title: img.getAttribute("title") || "",
     }));
+    const hreflangs = Array.from(document.querySelectorAll('link[rel="alternate"][hreflang]')).map((n) => ({
+      hreflang: n.getAttribute("hreflang") || "",
+      href: n.getAttribute("href") || "",
+    }));
+    const jsonLdScripts = Array.from(document.querySelectorAll('script[type="application/ld+json"]')).map((n) => n.textContent || "");
+    let jsonLdValidCount = 0;
+    let jsonLdInvalidCount = 0;
+    const schemaTypes = [];
+    for (const raw of jsonLdScripts) {
+      try {
+        const parsed = JSON.parse(raw);
+        jsonLdValidCount++;
+        const items = Array.isArray(parsed) ? parsed : [parsed];
+        for (const item of items) {
+          if (item && typeof item === "object") {
+            const t = item["@type"];
+            if (Array.isArray(t)) schemaTypes.push(...t.map(String));
+            else if (t) schemaTypes.push(String(t));
+            if (Array.isArray(item["@graph"])) {
+              for (const node of item["@graph"]) {
+                const gt = node?.["@type"];
+                if (Array.isArray(gt)) schemaTypes.push(...gt.map(String));
+                else if (gt) schemaTypes.push(String(gt));
+              }
+            }
+          }
+        }
+      } catch {
+        jsonLdInvalidCount++;
+      }
+    }
+    const resourceEntries = performance.getEntriesByType("resource") || [];
     return {
       url: location.href,
       page_url: pageUrlInBrowser,
@@ -224,6 +265,8 @@ async function extractSeoData(page, pageUrl) {
       meta_description: desc,
       meta_description_length: desc.length,
       robots_meta: robotsMeta,
+      viewport_meta: viewportMeta,
+      html_lang: htmlLang,
       robots_indexable: !/noindex/i.test(robotsMeta),
       robots_followable: !/nofollow/i.test(robotsMeta),
       canonical: canonicals[0] || "",
@@ -234,9 +277,21 @@ async function extractSeoData(page, pageUrl) {
       heading_outline: headings.map((h) => `${h.tag}:${h.text}`).join(" | "),
       links,
       images,
+      hreflang_count: hreflangs.length,
+      hreflang_values: hreflangs.map((h) => `${h.hreflang}:${h.href}`).join(" | "),
+      hreflang_invalid_count: hreflangs.filter((h) => !h.hreflang || !h.href).length,
+      jsonld_count: jsonLdScripts.length,
+      jsonld_valid_count: jsonLdValidCount,
+      jsonld_invalid_count: jsonLdInvalidCount,
+      schema_types: Array.from(new Set(schemaTypes.filter(Boolean))).join(" | "),
+      dom_node_count: document.querySelectorAll("*").length,
+      script_tag_count: document.querySelectorAll("script").length,
+      stylesheet_count: document.querySelectorAll('link[rel="stylesheet"]').length,
+      resource_count: resourceEntries.length,
     };
   }, pageUrl);
 }
+
 async function checkLink(url) {
   const headers = { "user-agent": "Universal-SEO-Audit Link Checker" };
   try {
@@ -335,6 +390,7 @@ async function main() {
   const pageRows = [];
   const issueRows = [];
   const imageRows = [];
+  const structuredRows = [];
   const startedAt = Date.now();
   const completedDurations = [];
   let pageErrors = 0;
@@ -372,8 +428,11 @@ async function main() {
         meta_description: desc,
         meta_description_length: data.meta_description_length,
         robots_meta: robotsMeta,
+        x_robots_tag: (nav.response?.headers?.()["x-robots-tag"] || ""),
         indexable: data.robots_indexable ? "yes" : "no",
         followable: data.robots_followable ? "yes" : "no",
+        viewport_meta: data.viewport_meta,
+        html_lang: data.html_lang,
         canonical,
         canonical_count: data.canonical_count,
         h1_count: data.h1_count,
@@ -383,6 +442,11 @@ async function main() {
         internal_link_count: data.links.filter((l)=>{ try { return new URL(l.href, finalUrl).origin === startOrigin; } catch { return false; } }).length,
         external_link_count: data.links.filter((l)=>{ try { return new URL(l.href, finalUrl).origin !== startOrigin; } catch { return false; } }).length,
         image_count: data.images.length,
+        hreflang_count: data.hreflang_count,
+        jsonld_count: data.jsonld_count,
+        jsonld_invalid_count: data.jsonld_invalid_count,
+        dom_node_count: data.dom_node_count,
+        resource_count: data.resource_count,
       });
 
       if (title) {
@@ -438,11 +502,36 @@ async function main() {
 
       if (!data.robots_indexable) add("noindex_present", `Robots meta contains noindex: ${robotsMeta || "noindex"}.`, "Remove noindex if this page is intended to be indexable.");
       if (!data.robots_followable) add("nofollow_present", `Robots meta contains nofollow: ${robotsMeta || "nofollow"}.`, "Remove nofollow if search engines should follow links from this page.");
+      const xRobotsTag = nav.response?.headers?.()["x-robots-tag"] || "";
+      if (/noindex/i.test(xRobotsTag)) add("noindex_header", `X-Robots-Tag contains noindex: ${xRobotsTag}`, "Remove the noindex directive from the response header if this page should be indexable.");
+      if (!normalizeWhitespace(data.viewport_meta)) add("missing_viewport", "Missing viewport meta tag.", 'Add <meta name="viewport" content="width=device-width, initial-scale=1"> for mobile-friendly rendering.');
+      if (!normalizeWhitespace(data.html_lang)) add("missing_lang", "Missing html lang attribute.", "Add a valid lang attribute on the <html> element.");
+      if (Number(data.jsonld_invalid_count || 0) > 0) add("invalid_jsonld", `${data.jsonld_invalid_count} JSON-LD block(s) could not be parsed.`, "Fix invalid JSON-LD so structured data can be parsed reliably.");
+      if (Number(data.hreflang_invalid_count || 0) > 0) add("hreflang_invalid", `${data.hreflang_invalid_count} hreflang tag(s) are missing hreflang or href values.`, "Fix incomplete hreflang tags so alternate language/region signals are valid.");
+      if (Number(data.dom_node_count || 0) > 1500) add("heavy_dom", `DOM node count is ${data.dom_node_count}.`, "Reduce overly complex page markup where practical to improve crawl/render efficiency.");
+      if (Number(data.resource_count || 0) > 200) add("high_resource_count", `Resource count is ${data.resource_count}.`, "Reduce unnecessary requests where practical to simplify page rendering.");
 
       if (Number(data.h1_count || 0) === 0) add("h1_missing", "No H1 found on the page.", "Add a single descriptive H1.");
       if (Number(data.h1_count || 0) > 1) add("multiple_h1", `Found ${data.h1_count} H1 elements.`, "Reduce to a single primary H1 unless multiple H1s are explicitly intentional and semantically valid.");
 
       if (Number(data.word_count || 0) > 0 && Number(data.word_count || 0) < 150) add("thin_content", `Word count is ${data.word_count}.`, "Expand the page content so the page has enough unique, useful information.");
+
+      structuredRows.push({
+        page_url: url,
+        x_robots_tag: xRobotsTag,
+        html_lang: normalizeWhitespace(data.html_lang),
+        viewport_meta: normalizeWhitespace(data.viewport_meta),
+        hreflang_count: data.hreflang_count,
+        hreflang_values: data.hreflang_values,
+        jsonld_count: data.jsonld_count,
+        jsonld_valid_count: data.jsonld_valid_count,
+        jsonld_invalid_count: data.jsonld_invalid_count,
+        schema_types: data.schema_types,
+        dom_node_count: data.dom_node_count,
+        script_tag_count: data.script_tag_count,
+        stylesheet_count: data.stylesheet_count,
+        resource_count: data.resource_count,
+      });
 
       let missingAlt = 0, filenameAlt = 0;
       for (const img of data.images) {
@@ -513,9 +602,10 @@ async function main() {
   const byIssueType = issueRows.reduce((acc, row) => { acc[row.issue_type] = (acc[row.issue_type] || 0) + 1; return acc; }, {});
 
   fs.writeFileSync(path.join(outDir, "seo-issues.csv"), stringify(issueRows, { header: true, columns: ["page_url","issue_type","impact","priority","importance","status_code","details","recommendation"] }));
-  fs.writeFileSync(path.join(outDir, "seo-pages.csv"), stringify(enrichedPages, { header: true, columns: ["page_url","final_url","status_code","title","title_length","meta_description","meta_description_length","robots_meta","indexable","followable","canonical","canonical_count","h1_count","h1_text","word_count","heading_outline","internal_link_count","external_link_count","image_count","issue_count"] }));
+  fs.writeFileSync(path.join(outDir, "seo-pages.csv"), stringify(enrichedPages, { header: true, columns: ["page_url","final_url","status_code","title","title_length","meta_description","meta_description_length","robots_meta","x_robots_tag","indexable","followable","viewport_meta","html_lang","canonical","canonical_count","h1_count","h1_text","word_count","heading_outline","internal_link_count","external_link_count","image_count","hreflang_count","jsonld_count","jsonld_invalid_count","dom_node_count","resource_count","issue_count"] }));
   fs.writeFileSync(path.join(outDir, "seo-images.csv"), stringify(imageRows, { header: true, columns: ["page_url","image_url","alt_text","title_text","alt_present","alt_looks_like_filename"] }));
-  fs.writeFileSync(path.join(outDir, "seo-report.json"), JSON.stringify({ runId, scanned: urls, pages: enrichedPages, issues: issueRows, images: imageRows }, null, 2));
+  fs.writeFileSync(path.join(outDir, "seo-structured-data.csv"), stringify(structuredRows, { header: true, columns: ["page_url","x_robots_tag","html_lang","viewport_meta","hreflang_count","hreflang_values","jsonld_count","jsonld_valid_count","jsonld_invalid_count","schema_types","dom_node_count","script_tag_count","stylesheet_count","resource_count"] }));
+  fs.writeFileSync(path.join(outDir, "seo-report.json"), JSON.stringify({ runId, scanned: urls, pages: enrichedPages, issues: issueRows, images: imageRows, structured: structuredRows }, null, 2));
   fs.writeFileSync(path.join(outDir, "seo-run-metadata.json"), JSON.stringify({
     runId,
     startedAt: new Date(startedAt).toISOString(),
@@ -524,6 +614,7 @@ async function main() {
     pageErrors,
     issuesFound: issueRows.length,
     imagesScanned: imageRows.length,
+    structuredRows: structuredRows.length,
     byIssueType,
     topIssueTypes: Object.entries(byIssueType).sort((a,b)=>b[1]-a[1]).slice(0,20).map(([issue_type, count])=>({ issue_type, count })),
   }, null, 2));
