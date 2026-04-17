@@ -172,7 +172,13 @@ function classifyIssue(type){
     og_title_missing:["minor","P3-Low","Low"],
     og_description_missing:["minor","P3-Low","Low"],
     og_image_missing:["moderate","P2-Medium","Medium"],
+    og_image_http:["moderate","P2-Medium","Medium"],
+    twitter_card_missing:["minor","P3-Low","Low"],
+    twitter_image_missing:["minor","P3-Low","Low"],
     og_url_mismatch:["minor","P3-Low","Low"],
+    invalid_schema_type:["moderate","P2-Medium","Medium"],
+    render_blocking_assets:["minor","P3-Low","Low"],
+    slow_dom_interactive:["minor","P3-Low","Low"],
     duplicate_content_cluster:["moderate","P2-Medium","Medium"],
     orphan_candidate:["moderate","P2-Medium","Medium"],
     scan_error:["serious","P1-High","High"],
@@ -229,6 +235,10 @@ async function extractSeoData(page, pageUrl) {
     const ogDescription = document.querySelector('meta[property="og:description" i]')?.getAttribute("content") || "";
     const ogImage = document.querySelector('meta[property="og:image" i]')?.getAttribute("content") || "";
     const ogUrl = document.querySelector('meta[property="og:url" i]')?.getAttribute("content") || "";
+    const twitterCard = document.querySelector('meta[name="twitter:card" i]')?.getAttribute("content") || "";
+    const twitterTitle = document.querySelector('meta[name="twitter:title" i]')?.getAttribute("content") || "";
+    const twitterDescription = document.querySelector('meta[name="twitter:description" i]')?.getAttribute("content") || "";
+    const twitterImage = document.querySelector('meta[name="twitter:image" i]')?.getAttribute("content") || "";
     const h1s = Array.from(document.querySelectorAll("h1")).map((n) => n.textContent?.trim() || "");
     const headings = Array.from(document.querySelectorAll("h1,h2,h3")).map((n) => ({ tag: n.tagName.toLowerCase(), text: (n.textContent || "").trim() })).slice(0,20);
     const bodyText = (document.body?.innerText || "").replace(/\s+/g, " ").trim();
@@ -576,6 +586,10 @@ async function main() {
         og_description: normalizeWhitespace(data.og_description),
         og_image: normalizeWhitespace(data.og_image),
         og_url: normalizeWhitespace(data.og_url),
+        twitter_card: normalizeWhitespace(data.twitter_card),
+        twitter_title: normalizeWhitespace(data.twitter_title),
+        twitter_description: normalizeWhitespace(data.twitter_description),
+        twitter_image: normalizeWhitespace(data.twitter_image),
       });
 
       let missingAlt = 0, filenameAlt = 0;
@@ -727,11 +741,12 @@ async function main() {
   fs.writeFileSync(path.join(outDir, "seo-pages.csv"), stringify(enrichedPages.map(({body_excerpt, ...rest})=>rest), { header: true, columns: ["page_url","final_url","status_code","section","title","title_length","meta_description","meta_description_length","og_title","og_description","og_image","og_url","robots_meta","x_robots_tag","indexable","followable","viewport_meta","html_lang","canonical","canonical_count","h1_count","h1_text","word_count","heading_outline","internal_link_count","external_link_count","image_count","hreflang_count","jsonld_count","jsonld_invalid_count","dom_node_count","resource_count","issue_count"] }));
   fs.writeFileSync(path.join(outDir, "seo-images.csv"), stringify(imageRows, { header: true, columns: ["page_url","image_url","alt_text","title_text","alt_present","alt_looks_like_filename"] }));
   fs.writeFileSync(path.join(outDir, "seo-structured-data.csv"), stringify(structuredRows, { header: true, columns: ["page_url","x_robots_tag","html_lang","viewport_meta","canonical","canonical_status","hreflang_count","hreflang_values","jsonld_count","jsonld_valid_count","jsonld_invalid_count","schema_present","schema_valid","schema_types","dom_node_count","script_tag_count","stylesheet_count","resource_count"] }));
-  fs.writeFileSync(path.join(outDir, "seo-social.csv"), stringify(socialRows, { header: true, columns: ["page_url","final_url","title","og_title","og_description","og_image","og_url"] }));
+  fs.writeFileSync(path.join(outDir, "seo-social.csv"), stringify(socialRows, { header: true, columns: ["page_url","final_url","title","og_title","og_description","og_image","og_url","twitter_card","twitter_title","twitter_description","twitter_image"] }));
   const sectionSummaryRows = Object.values(enrichedPages.reduce((acc, row) => { const k = row.section || "root"; if (!acc[k]) acc[k] = { section:k, page_count:0, total_issues:0, total_words:0, orphan_candidates:0 }; acc[k].page_count += 1; acc[k].total_issues += Number(row.issue_count || 0); acc[k].total_words += Number(row.word_count || 0); const crawlMatch = crawlRows.find((c)=>c.page_url===row.page_url); if ((crawlMatch?.orphan_candidate || "no") === "yes") acc[k].orphan_candidates += 1; return acc; }, {})).map((r)=>({ ...r, avg_issue_count: r.page_count ? (r.total_issues / r.page_count).toFixed(2) : "0.00", avg_word_count: r.page_count ? Math.round(r.total_words / r.page_count) : 0 }));
   fs.writeFileSync(path.join(outDir, "seo-crawl-analysis.csv"), stringify(crawlRows, { header: true, columns: ["page_url","final_url","status_code","section","inlinks","internal_link_depth","orphan_candidate","crawl_discovered","sitemap_only_candidate"] }));
   fs.writeFileSync(path.join(outDir, "seo-section-summary.csv"), stringify(sectionSummaryRows, { header: true, columns: ["section","page_count","total_issues","avg_issue_count","avg_word_count","orphan_candidates"] }));
-  fs.writeFileSync(path.join(outDir, "seo-report.json"), JSON.stringify({ runId, scanned: urls, pages: enrichedPages, issues: issueRows, images: imageRows, structured: structuredRows }, null, 2));
+  fs.writeFileSync(path.join(outDir, "seo-lighthouse.csv"), stringify(enrichedPages.map((p)=>({ page_url:p.page_url, final_url:p.final_url, lighthouse_requested: args["lighthouse"] ? "yes" : "no", lighthouse_available: "no", dom_interactive_ms: structuredRows.find((r)=>r.page_url===p.page_url)?.dom_interactive_ms || "", load_event_ms: structuredRows.find((r)=>r.page_url===p.page_url)?.load_event_ms || "", render_blocking_guess: structuredRows.find((r)=>r.page_url===p.page_url)?.render_blocking_guess || "", note: args["lighthouse"] ? "Lighthouse package integration can be layered in later; this output currently surfaces lightweight performance proxies." : "Lightweight performance proxies only." })), { header: true, columns: ["page_url","final_url","lighthouse_requested","lighthouse_available","dom_interactive_ms","load_event_ms","render_blocking_guess","note"] }));
+  fs.writeFileSync(path.join(outDir, "seo-report.json"), JSON.stringify({ runId, scanned: urls, pages: enrichedPages, issues: issueRows, images: imageRows, structured: structuredRows, social: socialRows }, null, 2));
   fs.writeFileSync(path.join(outDir, "seo-run-metadata.json"), JSON.stringify({
     runId,
     startedAt: new Date(startedAt).toISOString(),
@@ -744,6 +759,7 @@ async function main() {
     socialRows: socialRows.length,
     crawlRows: crawlRows.length,
     sectionSummaryRows: sectionSummaryRows.length,
+    lighthouseRows: enrichedPages.length,
     byIssueType,
     topIssueTypes: Object.entries(byIssueType).sort((a,b)=>b[1]-a[1]).slice(0,20).map(([issue_type, count])=>({ issue_type, count })),
   }, null, 2));

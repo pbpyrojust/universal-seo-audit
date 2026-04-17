@@ -1,12 +1,12 @@
 # Universal SEO Audit
 
-**Version:** 0.7.0
+**Version:** 0.8.0
 
 Universal SEO Audit is a production-oriented technical SEO audit CLI for development, staging, protected, and noindex sites.
 
 It is built for situations where external crawlers often cannot access or fully render a site, including password-protected staging environments, dev sites behind login, intentionally non-indexed environments, and browser-rendered sites that need pre-launch QA.
 
-The tool renders pages with Playwright, builds URL lists from sitemaps, supports protected-site authentication, and produces page-level CSVs, issue CSVs, crawl-analysis outputs, markdown summaries, ticket-ready backlog files, and now run-comparison outputs.
+The tool renders pages with Playwright, builds URL lists from sitemaps, supports protected-site authentication, and produces page-level CSVs, issue CSVs, crawl-analysis outputs, markdown summaries, ticket-ready backlog files, and now run-comparison outputs, richer social/schema validation, render-blocking heuristics, and lightweight performance reporting.
 
 ## What it audits
 
@@ -47,6 +47,7 @@ The tool renders pages with Playwright, builds URL lists from sitemaps, supports
 - `og:description`
 - `og:image`
 - `og:url`
+- twitter cards and twitter share image fields
 
 ### Redirect/canonical analysis
 - redirect count
@@ -219,3 +220,13 @@ Do **not** commit:
 - tokens or secret headers
 
 The repo ignores the common risky local files already.
+
+## Optional Lighthouse-style output
+
+Use `--lighthouse` to request extra performance output. In v0.8.0 this produces `seo-lighthouse.csv` with lightweight browser-rendered timing proxies and render-blocking hints.
+
+```bash
+node scripts/run-seo-audit.mjs \
+  --site https://www.example.com \
+  --lighthouse
+```
