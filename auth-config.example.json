@@ -1,0 +1,10 @@
+{
+  "loginUrl": "https://staging.example.com/login",
+  "username": "your-username",
+  "password": "your-password",
+  "usernameSelector": "input[name='username'], input[type='email']",
+  "passwordSelector": "input[name='password'], input[type='password']",
+  "submitSelector": "button[type='submit'], input[type='submit']",
+  "readySelector": "body",
+  "postLoginWaitMs": 2000
+}
