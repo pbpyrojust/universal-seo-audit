@@ -1,6 +1,6 @@
 # Universal SEO Audit
 
-**Version:** 0.5.0
+**Version:** 0.5.1
 
 Universal SEO Audit is a production-oriented technical SEO audit CLI for development, staging, protected, and noindex sites.
 

@@ -166,6 +166,14 @@ function classifyIssue(type){
     hreflang_invalid:["moderate","P2-Medium","Medium"],
     heavy_dom:["minor","P3-Low","Low"],
     high_resource_count:["minor","P3-Low","Low"],
+    missing_schema:["moderate","P2-Medium","Medium"],
+    schema_missing_type:["minor","P3-Low","Low"],
+    og_title_missing:["minor","P3-Low","Low"],
+    og_description_missing:["minor","P3-Low","Low"],
+    og_image_missing:["moderate","P2-Medium","Medium"],
+    og_url_mismatch:["minor","P3-Low","Low"],
+    duplicate_content_cluster:["moderate","P2-Medium","Medium"],
+    orphan_candidate:["moderate","P2-Medium","Medium"],
     scan_error:["serious","P1-High","High"],
   };
   return map[type] || ["moderate","P2-Medium","Medium"];
@@ -216,6 +224,10 @@ async function extractSeoData(page, pageUrl) {
     const htmlLang = document.documentElement?.getAttribute("lang") || "";
     const title = document.title || "";
     const desc = document.querySelector('meta[name="description" i]')?.getAttribute("content") || "";
+    const ogTitle = document.querySelector('meta[property="og:title" i]')?.getAttribute("content") || "";
+    const ogDescription = document.querySelector('meta[property="og:description" i]')?.getAttribute("content") || "";
+    const ogImage = document.querySelector('meta[property="og:image" i]')?.getAttribute("content") || "";
+    const ogUrl = document.querySelector('meta[property="og:url" i]')?.getAttribute("content") || "";
     const h1s = Array.from(document.querySelectorAll("h1")).map((n) => n.textContent?.trim() || "");
     const headings = Array.from(document.querySelectorAll("h1,h2,h3")).map((n) => ({ tag: n.tagName.toLowerCase(), text: (n.textContent || "").trim() })).slice(0,20);
     const bodyText = (document.body?.innerText || "").replace(/\s+/g, " ").trim();
@@ -264,6 +276,10 @@ async function extractSeoData(page, pageUrl) {
       title_length: title.length,
       meta_description: desc,
       meta_description_length: desc.length,
+      og_title: ogTitle,
+      og_description: ogDescription,
+      og_image: ogImage,
+      og_url: ogUrl,
       robots_meta: robotsMeta,
       viewport_meta: viewportMeta,
       html_lang: htmlLang,
@@ -274,6 +290,7 @@ async function extractSeoData(page, pageUrl) {
       h1_count: h1s.length,
       h1_text: h1s.join(" | "),
       word_count: bodyText ? bodyText.split(/\s+/).filter(Boolean).length : 0,
+      body_excerpt: bodyText.slice(0, 4000),
       heading_outline: headings.map((h) => `${h.tag}:${h.text}`).join(" | "),
       links,
       images,
@@ -391,6 +408,8 @@ async function main() {
   const issueRows = [];
   const imageRows = [];
   const structuredRows = [];
+  const socialRows = [];
+  const crawlRows = [];
   const startedAt = Date.now();
   const completedDurations = [];
   let pageErrors = 0;
@@ -427,6 +446,10 @@ async function main() {
         title_length: data.title_length,
         meta_description: desc,
         meta_description_length: data.meta_description_length,
+        og_title: normalizeWhitespace(data.og_title),
+        og_description: normalizeWhitespace(data.og_description),
+        og_image: normalizeWhitespace(data.og_image),
+        og_url: normalizeWhitespace(data.og_url),
         robots_meta: robotsMeta,
         x_robots_tag: (nav.response?.headers?.()["x-robots-tag"] || ""),
         indexable: data.robots_indexable ? "yes" : "no",
@@ -516,21 +539,42 @@ async function main() {
 
       if (Number(data.word_count || 0) > 0 && Number(data.word_count || 0) < 150) add("thin_content", `Word count is ${data.word_count}.`, "Expand the page content so the page has enough unique, useful information.");
 
+      const canonicalStatus = !canonical ? "missing" : Number(data.canonical_count || 0) > 1 ? "multiple" : (() => {
+        try {
+          const current = normalizeUrl(url);
+          if (new URL(canonical).origin !== new URL(current).origin) return "cross_domain";
+          if (canonical !== current) return "mismatch";
+          return "self_referencing";
+        } catch { return "review"; }
+      })();
       structuredRows.push({
         page_url: url,
         x_robots_tag: xRobotsTag,
         html_lang: normalizeWhitespace(data.html_lang),
         viewport_meta: normalizeWhitespace(data.viewport_meta),
+        canonical,
+        canonical_status: canonicalStatus,
         hreflang_count: data.hreflang_count,
         hreflang_values: data.hreflang_values,
         jsonld_count: data.jsonld_count,
         jsonld_valid_count: data.jsonld_valid_count,
         jsonld_invalid_count: data.jsonld_invalid_count,
+        schema_present: data.jsonld_count > 0 ? "yes" : "no",
+        schema_valid: data.jsonld_count > 0 && data.jsonld_invalid_count === 0 ? "yes" : "no",
         schema_types: data.schema_types,
         dom_node_count: data.dom_node_count,
         script_tag_count: data.script_tag_count,
         stylesheet_count: data.stylesheet_count,
         resource_count: data.resource_count,
+      });
+      socialRows.push({
+        page_url: url,
+        final_url: finalUrl,
+        title,
+        og_title: normalizeWhitespace(data.og_title),
+        og_description: normalizeWhitespace(data.og_description),
+        og_image: normalizeWhitespace(data.og_image),
+        og_url: normalizeWhitespace(data.og_url),
       });
 
       let missingAlt = 0, filenameAlt = 0;
@@ -595,6 +639,78 @@ async function main() {
     }
   }
 
+
+  // Duplicate-content clustering by body similarity (best-effort heuristic)
+  const contentCandidates = pageRows
+    .map((p) => ({ page_url: p.page_url, word_count: Number(p.word_count || 0), body_excerpt: p.body_excerpt || "" }))
+    .filter((p) => p.word_count >= 150 && p.body_excerpt);
+  const clusters = [];
+  const used = new Set();
+  const limit = Math.min(contentCandidates.length, 120);
+  for (let i = 0; i < limit; i++) {
+    if (used.has(contentCandidates[i].page_url)) continue;
+    const a = contentCandidates[i];
+    const aSet = tokenSet(a.body_excerpt);
+    const cluster = [a.page_url];
+    for (let j = i + 1; j < limit; j++) {
+      const b = contentCandidates[j];
+      if (used.has(b.page_url)) continue;
+      const sim = jaccardSimilarity(aSet, tokenSet(b.body_excerpt));
+      if (sim >= 0.82) {
+        cluster.push(b.page_url);
+        used.add(b.page_url);
+      }
+    }
+    if (cluster.length > 1) {
+      clusters.push(cluster);
+      for (const pageUrl of cluster) {
+        pushIssue(issueRows, pageUrl, "duplicate_content_cluster", `Page body content is highly similar to ${cluster.length - 1} other page(s). Cluster sample: ${cluster.slice(0,5).join(" | ")}`, "Review whether these pages should be consolidated, canonicalized, or differentiated with more unique content.");
+      }
+    }
+  }
+
+  // Crawl analysis: link depth + orphan candidates within scanned set
+  const scannedSet = new Set(urls);
+  const adjacency = new Map();
+  const inlinks = new Map();
+  for (const url of urls) { adjacency.set(url, []); inlinks.set(url, 0); }
+  for (const [pageUrl, links] of pageLinksMap.entries()) {
+    for (const link of links) {
+      if (link.kind !== "internal") continue;
+      const target = normalizeUrl(link.href);
+      if (!scannedSet.has(target)) continue;
+      adjacency.get(pageUrl).push(target);
+      inlinks.set(target, (inlinks.get(target) || 0) + 1);
+    }
+  }
+  const depth = new Map();
+  if (urls.length) {
+    const bfsQueue = [urls[0]];
+    depth.set(urls[0], 0);
+    while (bfsQueue.length) {
+      const node = bfsQueue.shift();
+      for (const target of adjacency.get(node) || []) {
+        if (!depth.has(target)) {
+          depth.set(target, depth.get(node) + 1);
+          bfsQueue.push(target);
+        }
+      }
+    }
+  }
+  for (const url of urls) {
+    const urlInlinks = inlinks.get(url) || 0;
+    const urlDepth = depth.has(url) ? depth.get(url) : "";
+    crawlRows.push({
+      page_url: url,
+      inlinks: urlInlinks,
+      internal_link_depth: urlDepth,
+      orphan_candidate: url !== urls[0] && urlInlinks === 0 ? "yes" : "no",
+    });
+    if (url !== urls[0] && urlInlinks === 0) {
+      pushIssue(issueRows, url, "orphan_candidate", "Page has zero internal inlinks within the scanned set and may be an orphan candidate.", "Review whether this page should be linked from the site, removed from the sitemap, or intentionally left isolated.");
+    }
+  }
+
   await browser.close();
 
   const issueCounts = issueRows.reduce((acc, row) => { acc[row.page_url] = (acc[row.page_url] || 0) + 1; return acc; }, {});
@@ -602,9 +718,11 @@ async function main() {
   const byIssueType = issueRows.reduce((acc, row) => { acc[row.issue_type] = (acc[row.issue_type] || 0) + 1; return acc; }, {});
 
   fs.writeFileSync(path.join(outDir, "seo-issues.csv"), stringify(issueRows, { header: true, columns: ["page_url","issue_type","impact","priority","importance","status_code","details","recommendation"] }));
-  fs.writeFileSync(path.join(outDir, "seo-pages.csv"), stringify(enrichedPages, { header: true, columns: ["page_url","final_url","status_code","title","title_length","meta_description","meta_description_length","robots_meta","x_robots_tag","indexable","followable","viewport_meta","html_lang","canonical","canonical_count","h1_count","h1_text","word_count","heading_outline","internal_link_count","external_link_count","image_count","hreflang_count","jsonld_count","jsonld_invalid_count","dom_node_count","resource_count","issue_count"] }));
+  fs.writeFileSync(path.join(outDir, "seo-pages.csv"), stringify(enrichedPages.map(({body_excerpt, ...rest})=>rest), { header: true, columns: ["page_url","final_url","status_code","title","title_length","meta_description","meta_description_length","og_title","og_description","og_image","og_url","robots_meta","x_robots_tag","indexable","followable","viewport_meta","html_lang","canonical","canonical_count","h1_count","h1_text","word_count","heading_outline","internal_link_count","external_link_count","image_count","hreflang_count","jsonld_count","jsonld_invalid_count","dom_node_count","resource_count","issue_count"] }));
   fs.writeFileSync(path.join(outDir, "seo-images.csv"), stringify(imageRows, { header: true, columns: ["page_url","image_url","alt_text","title_text","alt_present","alt_looks_like_filename"] }));
-  fs.writeFileSync(path.join(outDir, "seo-structured-data.csv"), stringify(structuredRows, { header: true, columns: ["page_url","x_robots_tag","html_lang","viewport_meta","hreflang_count","hreflang_values","jsonld_count","jsonld_valid_count","jsonld_invalid_count","schema_types","dom_node_count","script_tag_count","stylesheet_count","resource_count"] }));
+  fs.writeFileSync(path.join(outDir, "seo-structured-data.csv"), stringify(structuredRows, { header: true, columns: ["page_url","x_robots_tag","html_lang","viewport_meta","canonical","canonical_status","hreflang_count","hreflang_values","jsonld_count","jsonld_valid_count","jsonld_invalid_count","schema_present","schema_valid","schema_types","dom_node_count","script_tag_count","stylesheet_count","resource_count"] }));
+  fs.writeFileSync(path.join(outDir, "seo-social.csv"), stringify(socialRows, { header: true, columns: ["page_url","final_url","title","og_title","og_description","og_image","og_url"] }));
+  fs.writeFileSync(path.join(outDir, "seo-crawl-analysis.csv"), stringify(crawlRows, { header: true, columns: ["page_url","inlinks","internal_link_depth","orphan_candidate"] }));
   fs.writeFileSync(path.join(outDir, "seo-report.json"), JSON.stringify({ runId, scanned: urls, pages: enrichedPages, issues: issueRows, images: imageRows, structured: structuredRows }, null, 2));
   fs.writeFileSync(path.join(outDir, "seo-run-metadata.json"), JSON.stringify({
     runId,
@@ -615,6 +733,8 @@ async function main() {
     issuesFound: issueRows.length,
     imagesScanned: imageRows.length,
     structuredRows: structuredRows.length,
+    socialRows: socialRows.length,
+    crawlRows: crawlRows.length,
     byIssueType,
     topIssueTypes: Object.entries(byIssueType).sort((a,b)=>b[1]-a[1]).slice(0,20).map(([issue_type, count])=>({ issue_type, count })),
   }, null, 2));

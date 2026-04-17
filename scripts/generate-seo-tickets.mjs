@@ -45,7 +45,7 @@ const issueMeta = {
   missing_meta_description:{global:true}, duplicate_meta_description:{global:true}, meta_description_too_long:{global:true}, meta_description_too_short:{global:true},
   canonical_missing:{global:true}, canonical_multiple:{global:true}, canonical_cross_domain:{global:false}, canonical_mismatch:{global:false},
   h1_missing:{global:true}, multiple_h1:{global:true}, noindex_present:{global:false}, nofollow_present:{global:false},
-  redirect_page:{global:false}, thin_content:{global:false}, image_alt_missing:{global:false}, image_alt_filename:{global:false}, missing_lang:{global:true}, missing_viewport:{global:true}, invalid_jsonld:{global:false}, noindex_header:{global:false}, hreflang_invalid:{global:false}, heavy_dom:{global:false}, high_resource_count:{global:false}, scan_error:{global:false}
+  redirect_page:{global:false}, thin_content:{global:false}, image_alt_missing:{global:false}, image_alt_filename:{global:false}, missing_lang:{global:true}, missing_viewport:{global:true}, invalid_jsonld:{global:false}, noindex_header:{global:false}, hreflang_invalid:{global:false}, heavy_dom:{global:false}, high_resource_count:{global:false}, missing_schema:{global:true}, schema_missing_type:{global:false}, og_title_missing:{global:true}, og_description_missing:{global:true}, og_image_missing:{global:true}, og_url_mismatch:{global:false}, duplicate_content_cluster:{global:false}, orphan_candidate:{global:false}, scan_error:{global:false}
 };
 
 const args = parseArgs(process.argv);
