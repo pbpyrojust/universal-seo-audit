@@ -1,24 +1,32 @@
-# Universal SEO Audit (Phase 1 MVP)
+# Universal SEO Audit (Phase 2)
 
 A technical SEO audit CLI for development, staging, protected, and noindex sites.
 
-## Phase 1 scope
+This project is designed to solve a gap that tools like SEMrush often have on dev/staging environments: it can audit pages even when they are password protected or intentionally set to `noindex`.
 
-Phase 1 checks:
+## Phase 1 + Phase 2 scope
 
+Core checks:
 - HTTP status codes
 - title tags
 - meta descriptions
 - robots meta (`noindex` / `nofollow`)
 - canonical tags
 - H1 presence/count
-- basic word count
-- duplicate title detection
+- basic word-count/content presence
+
+Phase 2 additions:
+- broken internal/external link validation
+- duplicate title clustering
+- duplicate meta description clustering
+- image alt SEO checks
+- thin-content flags
+- image inventory output
 
 Outputs:
-
 - `seo-pages.csv`
 - `seo-issues.csv`
+- `seo-images.csv`
 - `seo-summary-google-doc.md`
 - `seo-ticket-backlog.csv`
 - `seo-report.json`
@@ -73,51 +81,6 @@ node scripts/run-seo-audit.mjs \
   --batch-size 10
 ```
 
-## Password-protected, staging, and development sites
-
-The tool supports:
-
-### 1. HTTP / Basic Auth
-
-```bash
-node scripts/run-seo-audit.mjs \
-  --site https://staging.example.com \
-  --http-username your-user \
-  --http-password your-pass
-```
-
-### 2. Form login via local auth config
-
-```bash
-node scripts/run-seo-audit.mjs \
-  --site https://staging.example.com \
-  --auth-config ./auth.local.json
-```
-
-Example `auth.local.json`:
-
-```json
-{
-  "loginUrl": "https://staging.example.com/login",
-  "username": "your-username",
-  "password": "your-password",
-  "usernameSelector": "input[name='username']",
-  "passwordSelector": "input[name='password']",
-  "submitSelector": "button[type='submit']",
-  "readySelector": "body",
-  "postLoginWaitMs": 2000
-}
-```
-
-The project ignores local auth files such as:
-
-- `*.auth.json`
-- `auth.local.json`
-- `.auth.local.json`
-- `.useo-auth.local.json`
-
-Use the committed `auth-config.example.json` only as a template.
-
 ## Output
 
 Each run writes to a site-name + timestamp folder, for example:
@@ -128,6 +91,7 @@ reports/
     urls.txt
     seo-pages.csv
     seo-issues.csv
+    seo-images.csv
     seo-summary-google-doc.md
     seo-ticket-backlog.csv
     seo-report.json
@@ -136,7 +100,6 @@ reports/
 ## Long-running scans, warnings, and progress indicators
 
 The tool prints:
-
 - large-scan warnings
 - protected-site warnings
 - ETA remaining per page
@@ -147,10 +110,4 @@ Example:
 ```text
 [3/25] Scanning: https://example.com/page | ETA remaining: 7.5m
    … still working on https://example.com/page (SEO extraction) | elapsed 22.1s | ETA remaining: 6.3m
-```
-
-## CLI wrapper
-
-```bash
-npm run cli -- audit --site https://www.example.com
 ```

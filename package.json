@@ -2,8 +2,8 @@
   "name": "universal-seo-audit",
   "private": true,
   "type": "module",
-  "version": "0.1.0",
-  "description": "Technical SEO audit CLI for dev, staging, protected, and noindex sites using Playwright.",
+  "version": "0.2.0",
+  "description": "Technical SEO audit CLI for development, staging, protected, and noindex sites using Playwright. Phase 2 adds link validation, duplicate metadata clustering, image SEO, and thin-content checks.",
   "author": "Justin Adams (https://justwhat.net)",
   "license": "MIT",
   "scripts": {
@@ -13,7 +13,8 @@
     "scan:urls": "node scripts/seo-audit.mjs --urls-file scripts/urls.txt --out-dir reports",
     "report": "node scripts/generate-seo-report.mjs --run-dir reports/latest",
     "tickets": "node scripts/generate-seo-tickets.mjs --run-dir reports/latest",
-    "cli": "node bin/universal-seo-audit.mjs"
+    "cli": "node bin/universal-seo-audit.mjs",
+    "sitemap:xml-to-urls": "node scripts/convert-sitemap-xml-to-urls.mjs"
   },
   "dependencies": {
     "csv-stringify": "^6.6.0",
