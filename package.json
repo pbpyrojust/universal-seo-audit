@@ -2,7 +2,7 @@
   "name": "universal-seo-audit",
   "private": true,
   "type": "module",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Production-ready technical SEO audit CLI for development, staging, protected, and noindex sites using Playwright, sitemap discovery, crawl analysis, and ticket-ready outputs.",
   "author": "Justin Adams (https://justwhat.net)",
   "license": "MIT",
