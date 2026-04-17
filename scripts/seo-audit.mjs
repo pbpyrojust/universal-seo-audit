@@ -25,6 +25,7 @@ function normalizeUrl(u){ try { const url = new URL(u); if (url.pathname !== "/"
 function normalizeCanonical(u){ return normalizeUrl(u); }
 function normalizeWhitespace(s){ return String(s || "").replace(/\s+/g, " ").trim(); }
 function decodeUrlForDisplay(u){ try { return decodeURI(String(u||"")); } catch { return String(u||""); } }
+function getUrlSection(u){ try { const url=new URL(u); const seg=url.pathname.split("/").filter(Boolean)[0] || "root"; return seg.toLowerCase(); } catch { return "unknown"; } }
 function loadUrlsFromFile(filePath){ return fs.readFileSync(filePath, "utf8").split(/\r?\n/g).map((s)=>s.trim()).filter(Boolean).filter((s)=>!s.startsWith("#")).map(normalizeUrl); }
 function sleep(ms){ return new Promise((resolve)=>setTimeout(resolve, ms)); }
 function formatDuration(ms){ const sec=Math.max(0,ms/1000); if(sec<90) return `${sec.toFixed(1)}s`; const min=sec/60; if(min<90) return `${min.toFixed(1)}m`; const hr=min/60; return `${hr.toFixed(2)}h`; }
@@ -702,9 +703,14 @@ async function main() {
     const urlDepth = depth.has(url) ? depth.get(url) : "";
     crawlRows.push({
       page_url: url,
+      final_url: pageRows.find((p)=>p.page_url===url)?.final_url || url,
+      status_code: pageRows.find((p)=>p.page_url===url)?.status_code || "",
+      section: getUrlSection(url),
       inlinks: urlInlinks,
       internal_link_depth: urlDepth,
       orphan_candidate: url !== urls[0] && urlInlinks === 0 ? "yes" : "no",
+      crawl_discovered: urlDepth === "" ? "no" : "yes",
+      sitemap_only_candidate: url !== urls[0] && urlDepth === "" ? "yes" : "no",
     });
     if (url !== urls[0] && urlInlinks === 0) {
       pushIssue(issueRows, url, "orphan_candidate", "Page has zero internal inlinks within the scanned set and may be an orphan candidate.", "Review whether this page should be linked from the site, removed from the sitemap, or intentionally left isolated.");
@@ -718,11 +724,13 @@ async function main() {
   const byIssueType = issueRows.reduce((acc, row) => { acc[row.issue_type] = (acc[row.issue_type] || 0) + 1; return acc; }, {});
 
   fs.writeFileSync(path.join(outDir, "seo-issues.csv"), stringify(issueRows, { header: true, columns: ["page_url","issue_type","impact","priority","importance","status_code","details","recommendation"] }));
-  fs.writeFileSync(path.join(outDir, "seo-pages.csv"), stringify(enrichedPages.map(({body_excerpt, ...rest})=>rest), { header: true, columns: ["page_url","final_url","status_code","title","title_length","meta_description","meta_description_length","og_title","og_description","og_image","og_url","robots_meta","x_robots_tag","indexable","followable","viewport_meta","html_lang","canonical","canonical_count","h1_count","h1_text","word_count","heading_outline","internal_link_count","external_link_count","image_count","hreflang_count","jsonld_count","jsonld_invalid_count","dom_node_count","resource_count","issue_count"] }));
+  fs.writeFileSync(path.join(outDir, "seo-pages.csv"), stringify(enrichedPages.map(({body_excerpt, ...rest})=>rest), { header: true, columns: ["page_url","final_url","status_code","section","title","title_length","meta_description","meta_description_length","og_title","og_description","og_image","og_url","robots_meta","x_robots_tag","indexable","followable","viewport_meta","html_lang","canonical","canonical_count","h1_count","h1_text","word_count","heading_outline","internal_link_count","external_link_count","image_count","hreflang_count","jsonld_count","jsonld_invalid_count","dom_node_count","resource_count","issue_count"] }));
   fs.writeFileSync(path.join(outDir, "seo-images.csv"), stringify(imageRows, { header: true, columns: ["page_url","image_url","alt_text","title_text","alt_present","alt_looks_like_filename"] }));
   fs.writeFileSync(path.join(outDir, "seo-structured-data.csv"), stringify(structuredRows, { header: true, columns: ["page_url","x_robots_tag","html_lang","viewport_meta","canonical","canonical_status","hreflang_count","hreflang_values","jsonld_count","jsonld_valid_count","jsonld_invalid_count","schema_present","schema_valid","schema_types","dom_node_count","script_tag_count","stylesheet_count","resource_count"] }));
   fs.writeFileSync(path.join(outDir, "seo-social.csv"), stringify(socialRows, { header: true, columns: ["page_url","final_url","title","og_title","og_description","og_image","og_url"] }));
-  fs.writeFileSync(path.join(outDir, "seo-crawl-analysis.csv"), stringify(crawlRows, { header: true, columns: ["page_url","inlinks","internal_link_depth","orphan_candidate"] }));
+  const sectionSummaryRows = Object.values(enrichedPages.reduce((acc, row) => { const k = row.section || "root"; if (!acc[k]) acc[k] = { section:k, page_count:0, total_issues:0, total_words:0, orphan_candidates:0 }; acc[k].page_count += 1; acc[k].total_issues += Number(row.issue_count || 0); acc[k].total_words += Number(row.word_count || 0); const crawlMatch = crawlRows.find((c)=>c.page_url===row.page_url); if ((crawlMatch?.orphan_candidate || "no") === "yes") acc[k].orphan_candidates += 1; return acc; }, {})).map((r)=>({ ...r, avg_issue_count: r.page_count ? (r.total_issues / r.page_count).toFixed(2) : "0.00", avg_word_count: r.page_count ? Math.round(r.total_words / r.page_count) : 0 }));
+  fs.writeFileSync(path.join(outDir, "seo-crawl-analysis.csv"), stringify(crawlRows, { header: true, columns: ["page_url","final_url","status_code","section","inlinks","internal_link_depth","orphan_candidate","crawl_discovered","sitemap_only_candidate"] }));
+  fs.writeFileSync(path.join(outDir, "seo-section-summary.csv"), stringify(sectionSummaryRows, { header: true, columns: ["section","page_count","total_issues","avg_issue_count","avg_word_count","orphan_candidates"] }));
   fs.writeFileSync(path.join(outDir, "seo-report.json"), JSON.stringify({ runId, scanned: urls, pages: enrichedPages, issues: issueRows, images: imageRows, structured: structuredRows }, null, 2));
   fs.writeFileSync(path.join(outDir, "seo-run-metadata.json"), JSON.stringify({
     runId,
@@ -735,6 +743,7 @@ async function main() {
     structuredRows: structuredRows.length,
     socialRows: socialRows.length,
     crawlRows: crawlRows.length,
+    sectionSummaryRows: sectionSummaryRows.length,
     byIssueType,
     topIssueTypes: Object.entries(byIssueType).sort((a,b)=>b[1]-a[1]).slice(0,20).map(([issue_type, count])=>({ issue_type, count })),
   }, null, 2));

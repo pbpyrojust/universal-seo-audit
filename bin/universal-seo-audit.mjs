@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const root = path.resolve(__dirname, "..");
-const version = "0.6.0";
+const version = "0.7.0";
 
 function run(script, args) {
   const result = spawnSync(process.execPath, [path.join(root, "scripts", script), ...args], {
@@ -28,6 +28,7 @@ Commands:
   scan                Run the raw SEO scan from a URL list or crawl mode
   report              Generate docs-ready markdown summary
   tickets             Generate ticket/backlog CSV
+  compare             Compare two previous runs
   sitemap-xml-to-urls Convert browser-saved sitemap XML to urls.txt
   help                Show this help
   version             Show package version
@@ -44,6 +45,7 @@ switch (command) {
   case "scan": run("seo-audit.mjs", rest); break;
   case "report": run("generate-seo-report.mjs", rest); break;
   case "tickets": run("generate-seo-tickets.mjs", rest); break;
+  case "compare": run("compare-seo-runs.mjs", rest); break;
   case "sitemap-xml-to-urls": run("convert-sitemap-xml-to-urls.mjs", rest); break;
   case "help": case "--help": case "-h": printHelp(); break;
   case "version": case "--version": case "-v": console.log(version); break;

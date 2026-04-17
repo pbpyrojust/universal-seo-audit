@@ -1,20 +1,12 @@
 # Universal SEO Audit
 
-**Version:** 0.6.0
+**Version:** 0.7.0
 
 Universal SEO Audit is a production-oriented technical SEO audit CLI for development, staging, protected, and noindex sites.
 
-It is built for cases where external crawlers often fail or do not have enough access to be useful, including password-protected staging environments, development sites behind login, intentionally non-indexed sites, and browser-rendered sites that need pre-launch QA.
+It is built for situations where external crawlers often cannot access or fully render a site, including password-protected staging environments, dev sites behind login, intentionally non-indexed environments, and browser-rendered sites that need pre-launch QA.
 
-The tool renders pages in a real browser with Playwright, builds URL lists from sitemaps, supports protected-site authentication, and produces page-level CSVs, issue CSVs, technical analysis outputs, markdown summaries, and ticket-ready backlog files.
-
-## What this tool is for
-
-- pre-launch SEO QA
-- staging-site audits behind auth
-- technical SEO backlog generation for engineering/content teams
-- metadata/schema/canonical/Open Graph validation before launch
-- browser-rendered technical SEO crawling when external crawlers cannot see enough of the site
+The tool renders pages with Playwright, builds URL lists from sitemaps, supports protected-site authentication, and produces page-level CSVs, issue CSVs, crawl-analysis outputs, markdown summaries, ticket-ready backlog files, and now run-comparison outputs.
 
 ## What it audits
 
@@ -33,6 +25,8 @@ The tool renders pages in a real browser with Playwright, builds URL lists from 
 - internal link depth
 - inlink counts
 - orphan-page candidates
+- section-level crawl summaries
+- sitemap-only candidates within the scanned set
 
 ### Content and duplication analysis
 - duplicate titles
@@ -44,6 +38,7 @@ The tool renders pages in a real browser with Playwright, builds URL lists from 
 - JSON-LD/schema presence
 - JSON-LD parse validity
 - schema type extraction
+- missing schema type heuristics
 - html `lang`
 - hreflang validity
 
@@ -73,12 +68,19 @@ reports/
     seo-structured-data.csv
     seo-social.csv
     seo-crawl-analysis.csv
-    seo-duplicates.csv
+    seo-section-summary.csv
     seo-summary-google-doc.md
     seo-ticket-backlog.csv
     seo-report.json
     seo-run-metadata.json
 ```
+
+### Additional v0.7 outputs
+- `seo-section-summary.csv` — rollup by top URL section
+- `seo-compare-summary.csv` — issue deltas between two runs
+- `seo-compare-new-issues.csv`
+- `seo-compare-resolved-issues.csv`
+- `seo-compare-summary.md`
 
 ## Requirements
 
@@ -100,59 +102,48 @@ pnpm exec playwright install --with-deps chromium
 node scripts/run-seo-audit.mjs --site https://www.example.com
 ```
 
+### Use a config file
+```bash
+node scripts/run-seo-audit.mjs --config ./useo.config.json
+```
+
+If `useo.config.json` exists in the project root, it will be used automatically unless you override with explicit CLI flags.
+
 ### Include all sitemap sources
 ```bash
-node scripts/run-seo-audit.mjs \
-  --site https://www.example.com \
-  --include-all-sitemaps
+node scripts/run-seo-audit.mjs   --site https://www.example.com   --include-all-sitemaps
 ```
 
 ### Use a provided URL list
 ```bash
-node scripts/run-seo-audit.mjs \
-  --site https://www.example.com \
-  --urls-file ./reports/manual-urls.txt
+node scripts/run-seo-audit.mjs   --site https://www.example.com   --urls-file ./reports/manual-urls.txt
 ```
 
 ### Protected-site conservative run
 ```bash
-node scripts/run-seo-audit.mjs \
-  --site https://staging.example.com \
-  --slow \
-  --respect-robots \
-  --cloudflare-aware
+node scripts/run-seo-audit.mjs   --site https://staging.example.com   --slow   --respect-robots   --cloudflare-aware
 ```
 
 ### Basic auth
 ```bash
-node scripts/run-seo-audit.mjs \
-  --site https://staging.example.com \
-  --http-username your-user \
-  --http-password your-pass
+node scripts/run-seo-audit.mjs   --site https://staging.example.com   --http-username your-user   --http-password your-pass
 ```
 
 ### Form-login config
 ```bash
-node scripts/run-seo-audit.mjs \
-  --site https://staging.example.com \
-  --auth-config ./auth.local.json
+node scripts/run-seo-audit.mjs   --site https://staging.example.com   --auth-config ./auth.local.json
 ```
 
-### Small-batch protected-site test
+### Compare two runs
 ```bash
-node scripts/run-seo-audit.mjs \
-  --site https://staging.example.com \
-  --auth-config ./auth.local.json \
-  --slow \
-  --respect-robots \
-  --cloudflare-aware \
-  --batch-size 10
+node scripts/compare-seo-runs.mjs   --before reports/example.com-20260416-141010   --after reports/example.com-20260420-101500
 ```
 
 ## Supported flags
 
 ### Scope and crawl control
 - `--site`
+- `--config`
 - `--urls-file`
 - `--sitemap-url`
 - `--include-sitemaps`
@@ -188,6 +179,27 @@ node scripts/run-seo-audit.mjs \
 - `--max-redirect-hops`
 - `--priority-model`
 - `--no-duplicate-clustering`
+
+## Config file
+
+Example config:
+
+```json
+{
+  "site": "https://www.example.com",
+  "include-all-sitemaps": true,
+  "slow": false,
+  "respect-robots": false,
+  "cloudflare-aware": false,
+  "batch-size": 0,
+  "max-link-checks": 250,
+  "duplicate-threshold": 0.85,
+  "max-redirect-hops": 5,
+  "priority-model": "default"
+}
+```
+
+A committed example file is included as `useo.config.example.json`.
 
 ## Auth for protected sites
 

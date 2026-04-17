@@ -25,6 +25,26 @@ function slugifySite(site) {
     return String(site || "site").toLowerCase().replace(/[^a-z0-9.-]+/g, "-").replace(/-{2,}/g, "-").replace(/^-|-$/g, "") || "site";
   }
 }
+
+function loadConfigFile(configPath) {
+  try {
+    const resolved = path.resolve(process.cwd(), configPath);
+    return JSON.parse(fs.readFileSync(resolved, "utf8"));
+  } catch (e) {
+    console.error(`ERROR: Could not read config file ${configPath}: ${String(e?.message || e)}`);
+    process.exit(1);
+  }
+}
+
+function mergeArgsWithConfig(args) {
+  const configPath = args["config"] || (fs.existsSync(path.resolve(process.cwd(), "useo.config.json")) ? "useo.config.json" : "");
+  if (!configPath) return args;
+  const cfg = loadConfigFile(configPath);
+  const merged = { ...cfg, ...args };
+  merged["config"] = configPath;
+  return merged;
+}
+
 function getRunId() {
   const d = new Date();
   const pad = (n) => String(n).padStart(2, "0");
@@ -34,7 +54,8 @@ function run(script, args) {
   return spawnSync(process.execPath, [path.resolve("scripts", script), ...args], { stdio: "inherit", env: process.env });
 }
 
-const args = parseArgs(process.argv);
+let args = parseArgs(process.argv);
+args = mergeArgsWithConfig(args);
 const site = args.site;
 const runId = args["run-id"] || `${slugifySite(site || args["sitemap-url"] || "site")}-${getRunId()}`;
 const baseOutDir = path.resolve(process.cwd(), args["out-dir"] || "reports");
@@ -43,6 +64,7 @@ fs.mkdirSync(outDir, { recursive: true });
 const urlsFile = args["urls-file"] ? path.resolve(args["urls-file"]) : path.join(outDir, "urls.txt");
 const batchSize = args["batch-size"] ? Number(args["batch-size"]) : 0;
 
+if (args["config"]) console.log(`\nℹ Using config file: ${args["config"]}`);
 if (batchSize > 0) console.log(`\nℹ Small-batch mode enabled (--batch-size ${batchSize}).`);
 if (args["slow"] || args["cloudflare-aware"]) {
   console.log("\nℹ Protected-site / conservative mode enabled.");
@@ -84,7 +106,7 @@ for (const key of ["slow","respect-robots","cloudflare-aware","crawl","http-user
   if (args[key] === true) auditArgs.push(`--${key}`);
   else if (args[key]) auditArgs.push(`--${key}`, String(args[key]));
 }
-for (const key of ["retries","backoff-ms","crawl-delay-ms","max-link-checks"]) {
+for (const key of ["retries","backoff-ms","crawl-delay-ms","max-link-checks","duplicate-threshold","max-redirect-hops","priority-model"]) {
   if (args[key]) auditArgs.push(`--${key}`, String(args[key]));
 }
 if (batchSize > 0) auditArgs.push("--batch-size", String(batchSize));

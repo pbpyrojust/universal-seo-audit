@@ -1,0 +1,12 @@
+{
+  "site": "https://www.example.com",
+  "include-all-sitemaps": true,
+  "slow": false,
+  "respect-robots": false,
+  "cloudflare-aware": false,
+  "batch-size": 0,
+  "max-link-checks": 250,
+  "duplicate-threshold": 0.85,
+  "max-redirect-hops": 5,
+  "priority-model": "default"
+}

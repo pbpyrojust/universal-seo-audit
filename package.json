@@ -2,8 +2,8 @@
   "name": "universal-seo-audit",
   "private": true,
   "type": "module",
-  "version": "0.6.0",
-  "description": "Production-ready technical SEO audit CLI for development, staging, protected, and noindex sites using Playwright, sitemap discovery, crawl analysis, and ticket-ready outputs.",
+  "version": "0.7.0",
+  "description": "Production-ready technical SEO audit CLI for development, staging, protected, and noindex sites using Playwright, sitemap discovery, crawl analysis, config-driven runs, run comparison, and ticket-ready outputs.",
   "author": "Justin Adams (https://justwhat.net)",
   "license": "MIT",
   "scripts": {
@@ -14,7 +14,8 @@
     "report": "node scripts/generate-seo-report.mjs --run-dir reports/latest",
     "tickets": "node scripts/generate-seo-tickets.mjs --run-dir reports/latest",
     "cli": "node bin/universal-seo-audit.mjs",
-    "sitemap:xml-to-urls": "node scripts/convert-sitemap-xml-to-urls.mjs"
+    "sitemap:xml-to-urls": "node scripts/convert-sitemap-xml-to-urls.mjs",
+    "compare": "node scripts/compare-seo-runs.mjs --before reports/run-a --after reports/run-b"
   },
   "dependencies": {
     "csv-stringify": "^6.6.0",
