@@ -1,13 +1,27 @@
 {
   "name": "universal-seo-audit",
-  "version": "1.1.0",
+  "private": true,
   "type": "module",
+  "version": "1.0.1",
+  "description": "Production-ready technical SEO audit CLI for development, staging, protected, and noindex sites using Playwright, sitemap discovery, crawl analysis, image integrity checks, and full Lighthouse/Core Web Vitals output.",
+  "author": "Justin Adams (https://justwhat.net)",
+  "license": "MIT",
   "scripts": {
-    "audit": "node scripts/run-seo-audit.mjs"
+    "audit": "node scripts/run-seo-audit.mjs --site https://www.example.com",
+    "audit:slow": "node scripts/run-seo-audit.mjs --site https://www.example.com --slow --respect-robots --cloudflare-aware",
+    "build:urls": "node scripts/build-urls-from-sitemap.mjs --site https://www.example.com --out scripts/urls.txt",
+    "scan:urls": "node scripts/seo-audit.mjs --urls-file scripts/urls.txt --out-dir reports",
+    "report": "node scripts/generate-seo-report.mjs --run-dir reports/latest",
+    "tickets": "node scripts/generate-seo-tickets.mjs --run-dir reports/latest",
+    "cli": "node bin/universal-seo-audit.mjs",
+    "sitemap:xml-to-urls": "node scripts/convert-sitemap-xml-to-urls.mjs",
+    "compare": "node scripts/compare-seo-runs.mjs --before reports/run-a --after reports/run-b"
   },
   "dependencies": {
-    "playwright": "^1.44.0",
-    "lighthouse": "^12.0.0",
-    "chrome-launcher": "^1.0.0"
-  }
+    "csv-stringify": "^6.6.0",
+    "playwright": "^1.57.0",
+    "lighthouse": "^12.8.0",
+    "chrome-launcher": "^1.1.2"
+  },
+  "packageManager": "pnpm@10.8.0"
 }
