@@ -1,24 +1,35 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+Icon?
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Logs
+*.log
+
+# Dependencies
 node_modules/
+
+# Output
 reports/
-!reports/.gitkeep
-scripts/urls.txt
-latest
-.npmrc
+dist/
+build/
+
+# Env
 .env
 .env.*
-*.xml
-!example-*.xml
-*.auth.json
-auth.local.json
-.auth.local.json
-.useo-auth.local.json
-playwright-report/
-test-results/
-blob-report/
-.DS_Store
-Thumbs.db
-*.log
-tmp/
-temp/
+
+# Editor
 .vscode/
 .idea/
+
+# Temp/cache
+tmp/
+temp/
+.cache/
