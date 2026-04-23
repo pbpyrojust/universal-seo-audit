@@ -1,32 +1,18 @@
 
-import lighthouse from "lighthouse";
-import { launch } from "chrome-launcher";
+import lighthouse from 'lighthouse';
+import chromeLauncher from 'chrome-launcher';
 
 export async function runLighthouseAudit(url) {
-  const chrome = await launch({ chromeFlags: ["--headless=new", "--no-sandbox", "--disable-gpu"] });
-  try {
-    const runnerResult = await lighthouse(url, {
-      port: chrome.port,
-      output: "json",
-      logLevel: "error",
-      onlyCategories: ["performance"],
-      disableStorageReset: true,
-      screenEmulation: { mobile: true }
-    });
-    const lhr = runnerResult?.lhr || {};
-    return {
-      page_url: url,
-      final_url: lhr.finalDisplayedUrl || lhr.finalUrl || url,
-      lighthouse_available: "yes",
-      performance_score: Math.round((lhr.categories?.performance?.score || 0) * 100),
-      lcp_ms: lhr.audits?.["largest-contentful-paint"]?.numericValue || "",
-      cls: lhr.audits?.["cumulative-layout-shift"]?.numericValue || "",
-      tbt_ms: lhr.audits?.["total-blocking-time"]?.numericValue || "",
-      fcp_ms: lhr.audits?.["first-contentful-paint"]?.numericValue || "",
-      si_ms: lhr.audits?.["speed-index"]?.numericValue || "",
-      note: ""
-    };
-  } finally {
-    await chrome.kill();
-  }
+  const chrome = await chromeLauncher.launch({chromeFlags: ['--headless', '--no-sandbox']});
+  const result = await lighthouse(url, {port: chrome.port, output: 'json', logLevel: 'error'});
+  const lhr = result.lhr;
+  await chrome.kill();
+
+  return {
+    url,
+    performance: lhr.categories.performance.score * 100,
+    lcp: lhr.audits['largest-contentful-paint']?.numericValue,
+    cls: lhr.audits['cumulative-layout-shift']?.numericValue,
+    tbt: lhr.audits['total-blocking-time']?.numericValue
+  };
 }
