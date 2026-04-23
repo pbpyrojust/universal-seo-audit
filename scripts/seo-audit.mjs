@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { chromium } from "playwright";
 import { stringify } from "csv-stringify/sync";
+import { runLighthouseAudit } from "./lib/lighthouse-runner.mjs";
 
 function parseArgs(argv) {
   const args = {};
@@ -160,6 +161,14 @@ function classifyIssue(type){
     thin_content:["moderate","P2-Medium","Medium"],
     image_alt_missing:["moderate","P2-Medium","Medium"],
     image_alt_filename:["minor","P3-Low","Low"],
+    broken_image:["serious","P1-High","High"],
+    image_www_mismatch:["moderate","P2-Medium","Medium"],
+    image_host_mismatch:["minor","P3-Low","Low"],
+    image_http_on_https:["moderate","P2-Medium","Medium"],
+    poor_performance:["moderate","P2-Medium","Medium"],
+    lcp_slow:["serious","P1-High","High"],
+    cls_high:["serious","P1-High","High"],
+    tbt_high:["moderate","P2-Medium","Medium"],
     missing_lang:["moderate","P2-Medium","Medium"],
     missing_viewport:["moderate","P2-Medium","Medium"],
     invalid_jsonld:["moderate","P2-Medium","Medium"],
@@ -331,6 +340,43 @@ async function checkLink(url) {
   }
 }
 
+async function checkImage(url, pageUrl) {
+  const headers = { "user-agent": "Universal-SEO-Audit Image Checker" };
+  try {
+    let res = await fetch(url, { method: "HEAD", redirect: "follow", headers });
+    if (res.status === 405 || res.status === 501) res = await fetch(url, { method: "GET", redirect: "follow", headers });
+    const finalUrl = res.url || url;
+    const originalHost = new URL(url, pageUrl).host;
+    const finalHost = new URL(finalUrl, pageUrl).host;
+    const pageHost = new URL(pageUrl).host;
+    return {
+      status: res.status,
+      ok: res.ok,
+      final_url: finalUrl,
+      image_host: originalHost,
+      image_final_host: finalHost,
+      image_host_mismatch: originalHost !== finalHost ? "yes" : "no",
+      image_www_mismatch: originalHost.replace(/^www\./,"") === finalHost.replace(/^www\./,"") && originalHost !== finalHost ? "yes" : "no",
+      image_non_canonical_host: originalHost.replace(/^www\./,"") === pageHost.replace(/^www\./,"") && originalHost !== pageHost ? "yes" : "no",
+      image_http_on_https: String(url).startsWith("http://") && String(pageUrl).startsWith("https://") ? "yes" : "no"
+    };
+  } catch (e) {
+    const originalHost = (() => { try { return new URL(url, pageUrl).host; } catch { return ""; } })();
+    return {
+      status: 0,
+      ok: false,
+      final_url: "",
+      image_host: originalHost,
+      image_final_host: "",
+      image_host_mismatch: "no",
+      image_www_mismatch: "no",
+      image_non_canonical_host: "no",
+      image_http_on_https: String(url).startsWith("http://") && String(pageUrl).startsWith("https://") ? "yes" : "no",
+      error: String(e?.message || e)
+    };
+  }
+}
+
 async function main() {
   const baseOutDir = path.resolve(process.cwd(), args["out-dir"] || "reports");
   const runId = args["run-id"] ? String(args["run-id"]) : `site-${new Date().toISOString().replace(/[-:T]/g, "").slice(0, 15)}`;
@@ -348,6 +394,7 @@ async function main() {
   const batchSize = args["batch-size"] ? Number(args["batch-size"]) : 0;
   const maxLinkChecks = args["max-link-checks"] ? Number(args["max-link-checks"]) : 250;
   const auth = getAuthSettings(args);
+  const runLighthouse = Boolean(args["lighthouse"]);
 
   let robotsCfg = { isAllowedUrl: null, crawlDelayMs: 0 };
   if (respectRobots) robotsCfg = await buildRobotsMatcher(startUrl);
@@ -421,6 +468,7 @@ async function main() {
   const structuredRows = [];
   const socialRows = [];
   const crawlRows = [];
+  const lighthouseRows = [];
   const startedAt = Date.now();
   const completedDurations = [];
   let pageErrors = 0;
@@ -592,22 +640,65 @@ async function main() {
         twitter_image: normalizeWhitespace(data.twitter_image),
       });
 
-      let missingAlt = 0, filenameAlt = 0;
+if (runLighthouse) {
+  try {
+    const lh = await runLighthouseAudit(finalUrl);
+    lighthouseRows.push(lh);
+    if (Number(lh.performance_score || 0) > 0 && Number(lh.performance_score) < 50) add("poor_performance", `Low Lighthouse performance score: ${lh.performance_score}.`, "Improve Core Web Vitals and reduce render-blocking resources.");
+    if (Number(lh.lcp_ms || 0) > 4000) add("lcp_slow", `Largest Contentful Paint is slow: ${lh.lcp_ms}ms.`, "Optimize LCP by reducing server delay, image payloads, and render-blocking dependencies.");
+    if (Number(lh.cls || 0) > 0.25) add("cls_high", `Cumulative Layout Shift is high: ${lh.cls}.`, "Reduce layout shifts by reserving space for media/embeds and stabilizing dynamic UI.");
+    if (Number(lh.tbt_ms || 0) > 300) add("tbt_high", `Total Blocking Time is high: ${lh.tbt_ms}ms.`, "Reduce long main-thread tasks and defer or split heavy JavaScript.");
+  } catch (e) {
+    lighthouseRows.push({
+      page_url: url,
+      final_url: finalUrl,
+      lighthouse_available: "no",
+      performance_score: "",
+      lcp_ms: "",
+      cls: "",
+      tbt_ms: "",
+      fcp_ms: "",
+      si_ms: "",
+      note: `Lighthouse failed: ${String(e?.message || e)}`
+    });
+  }
+}
+
+      let missingAlt = 0, filenameAlt = 0, brokenImages = 0, wwwMismatchImages = 0, hostMismatchImages = 0, httpOnHttpsImages = 0;
       for (const img of data.images) {
         const alt = normalizeWhitespace(img.alt);
+        const src = normalizeWhitespace(img.src);
+        const imgCheck = src ? await checkImage(src, finalUrl) : null;
         imageRows.push({
           page_url: url,
-          image_url: normalizeWhitespace(img.src),
+          image_url: src,
           alt_text: alt,
           title_text: normalizeWhitespace(img.title),
           alt_present: alt ? "yes" : "no",
           alt_looks_like_filename: looksLikeFilename(alt) ? "yes" : "no",
+          image_status_code: imgCheck?.status || "",
+          image_final_url: imgCheck?.final_url || "",
+          image_host: imgCheck?.image_host || "",
+          image_final_host: imgCheck?.image_final_host || "",
+          image_broken: imgCheck && !imgCheck.ok ? "yes" : "no",
+          image_host_mismatch: imgCheck?.image_host_mismatch || "no",
+          image_www_mismatch: imgCheck?.image_www_mismatch || "no",
+          image_non_canonical_host: imgCheck?.image_non_canonical_host || "no",
+          image_http_on_https: imgCheck?.image_http_on_https || "no",
         });
         if (!alt) missingAlt++;
         else if (looksLikeFilename(alt)) filenameAlt++;
+        if (imgCheck && !imgCheck.ok) brokenImages++;
+        if (imgCheck?.image_www_mismatch === "yes") wwwMismatchImages++;
+        if (imgCheck?.image_host_mismatch === "yes") hostMismatchImages++;
+        if (imgCheck?.image_http_on_https === "yes") httpOnHttpsImages++;
       }
       if (missingAlt > 0) add("image_alt_missing", `${missingAlt} image(s) are missing alt text.`, "Add meaningful alt text to informative images and leave decorative images intentionally empty only when appropriate.");
       if (filenameAlt > 0) add("image_alt_filename", `${filenameAlt} image(s) appear to use filename-like alt text.`, "Replace filename-style alt text with human-readable, descriptive alt text.");
+      if (brokenImages > 0) add("broken_image", `${brokenImages} image(s) returned an error or failed to load directly.`, "Fix or replace broken image URLs so assets resolve correctly.");
+      if (wwwMismatchImages > 0) add("image_www_mismatch", `${wwwMismatchImages} image(s) use a different www/non-www host than their resolved destination.`, "Standardize image URLs so image assets use the canonical host consistently.");
+      if (hostMismatchImages > 0) add("image_host_mismatch", `${hostMismatchImages} image(s) changed host between requested and final URL.`, "Review image hosting and redirects to ensure asset URLs resolve to the intended host.");
+      if (httpOnHttpsImages > 0) add("image_http_on_https", `${httpOnHttpsImages} image(s) are served over HTTP on an HTTPS page.`, "Serve all images over HTTPS to avoid mixed-content and trust issues.");
 
       completedDurations.push(Date.now() - pageStart);
       console.log(`   ↳ Done in ${formatElapsed(pageStart)} | issues found: ${pageIssues} | elapsed: ${formatElapsed(startedAt)} | ETA remaining: ${estimateRemaining(completedDurations, i + 1, urls.length)}`);
@@ -739,13 +830,13 @@ async function main() {
 
   fs.writeFileSync(path.join(outDir, "seo-issues.csv"), stringify(issueRows, { header: true, columns: ["page_url","issue_type","impact","priority","importance","status_code","details","recommendation"] }));
   fs.writeFileSync(path.join(outDir, "seo-pages.csv"), stringify(enrichedPages.map(({body_excerpt, ...rest})=>rest), { header: true, columns: ["page_url","final_url","status_code","section","title","title_length","meta_description","meta_description_length","og_title","og_description","og_image","og_url","robots_meta","x_robots_tag","indexable","followable","viewport_meta","html_lang","canonical","canonical_count","h1_count","h1_text","word_count","heading_outline","internal_link_count","external_link_count","image_count","hreflang_count","jsonld_count","jsonld_invalid_count","dom_node_count","resource_count","issue_count"] }));
-  fs.writeFileSync(path.join(outDir, "seo-images.csv"), stringify(imageRows, { header: true, columns: ["page_url","image_url","alt_text","title_text","alt_present","alt_looks_like_filename"] }));
+  fs.writeFileSync(path.join(outDir, "seo-images.csv"), stringify(imageRows, { header: true, columns: ["page_url","image_url","alt_text","title_text","alt_present","alt_looks_like_filename","image_status_code","image_final_url","image_host","image_final_host","image_broken","image_host_mismatch","image_www_mismatch","image_non_canonical_host","image_http_on_https"] }));
   fs.writeFileSync(path.join(outDir, "seo-structured-data.csv"), stringify(structuredRows, { header: true, columns: ["page_url","x_robots_tag","html_lang","viewport_meta","canonical","canonical_status","hreflang_count","hreflang_values","jsonld_count","jsonld_valid_count","jsonld_invalid_count","schema_present","schema_valid","schema_types","dom_node_count","script_tag_count","stylesheet_count","resource_count"] }));
   fs.writeFileSync(path.join(outDir, "seo-social.csv"), stringify(socialRows, { header: true, columns: ["page_url","final_url","title","og_title","og_description","og_image","og_url","twitter_card","twitter_title","twitter_description","twitter_image"] }));
   const sectionSummaryRows = Object.values(enrichedPages.reduce((acc, row) => { const k = row.section || "root"; if (!acc[k]) acc[k] = { section:k, page_count:0, total_issues:0, total_words:0, orphan_candidates:0 }; acc[k].page_count += 1; acc[k].total_issues += Number(row.issue_count || 0); acc[k].total_words += Number(row.word_count || 0); const crawlMatch = crawlRows.find((c)=>c.page_url===row.page_url); if ((crawlMatch?.orphan_candidate || "no") === "yes") acc[k].orphan_candidates += 1; return acc; }, {})).map((r)=>({ ...r, avg_issue_count: r.page_count ? (r.total_issues / r.page_count).toFixed(2) : "0.00", avg_word_count: r.page_count ? Math.round(r.total_words / r.page_count) : 0 }));
   fs.writeFileSync(path.join(outDir, "seo-crawl-analysis.csv"), stringify(crawlRows, { header: true, columns: ["page_url","final_url","status_code","section","inlinks","internal_link_depth","orphan_candidate","crawl_discovered","sitemap_only_candidate"] }));
   fs.writeFileSync(path.join(outDir, "seo-section-summary.csv"), stringify(sectionSummaryRows, { header: true, columns: ["section","page_count","total_issues","avg_issue_count","avg_word_count","orphan_candidates"] }));
-  fs.writeFileSync(path.join(outDir, "seo-lighthouse.csv"), stringify(enrichedPages.map((p)=>({ page_url:p.page_url, final_url:p.final_url, lighthouse_requested: args["lighthouse"] ? "yes" : "no", lighthouse_available: "no", dom_interactive_ms: structuredRows.find((r)=>r.page_url===p.page_url)?.dom_interactive_ms || "", load_event_ms: structuredRows.find((r)=>r.page_url===p.page_url)?.load_event_ms || "", render_blocking_guess: structuredRows.find((r)=>r.page_url===p.page_url)?.render_blocking_guess || "", note: args["lighthouse"] ? "Lighthouse package integration can be layered in later; this output currently surfaces lightweight performance proxies." : "Lightweight performance proxies only." })), { header: true, columns: ["page_url","final_url","lighthouse_requested","lighthouse_available","dom_interactive_ms","load_event_ms","render_blocking_guess","note"] }));
+  fs.writeFileSync(path.join(outDir, "seo-lighthouse.csv"), stringify((runLighthouse ? lighthouseRows : enrichedPages.map((p)=>({ page_url:p.page_url, final_url:p.final_url, lighthouse_available:"no", performance_score:"", lcp_ms:"", cls:"", tbt_ms:"", fcp_ms:"", si_ms:"", note:"Run with --lighthouse to collect Lighthouse/Core Web Vitals metrics." }))), { header: true, columns: ["page_url","final_url","lighthouse_available","performance_score","lcp_ms","cls","tbt_ms","fcp_ms","si_ms","note"] }));
   fs.writeFileSync(path.join(outDir, "seo-report.json"), JSON.stringify({ runId, scanned: urls, pages: enrichedPages, issues: issueRows, images: imageRows, structured: structuredRows, social: socialRows }, null, 2));
   fs.writeFileSync(path.join(outDir, "seo-run-metadata.json"), JSON.stringify({
     runId,
@@ -759,7 +850,7 @@ async function main() {
     socialRows: socialRows.length,
     crawlRows: crawlRows.length,
     sectionSummaryRows: sectionSummaryRows.length,
-    lighthouseRows: enrichedPages.length,
+    lighthouseRows: (runLighthouse ? lighthouseRows.length : 0),
     byIssueType,
     topIssueTypes: Object.entries(byIssueType).sort((a,b)=>b[1]-a[1]).slice(0,20).map(([issue_type, count])=>({ issue_type, count })),
   }, null, 2));

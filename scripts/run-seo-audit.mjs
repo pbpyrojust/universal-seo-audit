@@ -73,6 +73,9 @@ if (args["slow"] || args["cloudflare-aware"]) {
 if (args["http-username"] || args["auth-config"] || (args["login-url"] && args["username"])) {
   console.log("ℹ Authentication options detected. This run will attempt protected-site access before scanning.");
 }
+if (args["lighthouse"]) {
+  console.log("ℹ Lighthouse enabled. This will slow down scans and should usually be used on smaller batches.");
+}
 
 if (!args["urls-file"]) {
   console.log("\n=== Step 1/4: Build URL list from sitemap ===");
@@ -102,7 +105,7 @@ if (batchSize > 0) {
 console.log("\n=== Step 2/4: Run SEO audit ===");
 const auditArgs = ["--urls-file", urlsFile, "--out-dir", baseOutDir, "--run-id", runId];
 if (site) auditArgs.push("--start", site);
-for (const key of ["slow","respect-robots","cloudflare-aware","crawl","http-username","http-password","auth-config","login-url","username","password","username-selector","password-selector","submit-selector","ready-selector","post-login-wait-ms"]) {
+for (const key of ["slow","respect-robots","cloudflare-aware","crawl","lighthouse","http-username","http-password","auth-config","login-url","username","password","username-selector","password-selector","submit-selector","ready-selector","post-login-wait-ms"]) {
   if (args[key] === true) auditArgs.push(`--${key}`);
   else if (args[key]) auditArgs.push(`--${key}`, String(args[key]));
 }

@@ -1,6 +1,6 @@
 # Universal SEO Audit
 
-**Version:** 0.8.1
+**Version:** 1.0.1
 
 Universal SEO Audit is a production-oriented technical SEO audit CLI for development, staging, protected, and noindex sites.
 
@@ -22,6 +22,12 @@ The tool renders pages with Playwright, builds URL lists from sitemaps, supports
 ### Crawl and linking analysis
 - broken internal links
 - broken external links
+
+### Image integrity
+- broken image detection
+- image host mismatch detection
+- www/non-www image mismatch detection
+- HTTP images on HTTPS pages
 - internal link depth
 - inlink counts
 - orphan-page candidates
@@ -223,7 +229,7 @@ The repo ignores the common risky local files already.
 
 ## Optional Lighthouse-style output
 
-Use `--lighthouse` to request extra performance output. In v0.8.0 this produces `seo-lighthouse.csv` with lightweight browser-rendered timing proxies and render-blocking hints.
+Use `--lighthouse` to run a real Lighthouse performance pass per page. This writes `seo-lighthouse.csv` with `performance_score`, `lcp_ms`, `cls`, `tbt_ms`, `fcp_ms`, and `si_ms`.
 
 ```bash
 node scripts/run-seo-audit.mjs \
