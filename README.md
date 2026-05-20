@@ -1,6 +1,6 @@
 # Universal SEO Audit
 
-**Version:** 1.4.1
+**Version:** 1.4.2
 
 Universal SEO Audit is a technical SEO and asset integrity audit CLI for development, staging, protected, and noindex sites.
 
@@ -80,3 +80,8 @@ node scripts/run-seo-audit.mjs --site https://www.example.com
 node scripts/run-seo-audit.mjs --site https://www.example.com --lighthouse
 node scripts/run-seo-audit.mjs --site https://www.example.com --brand-config ./branding.json
 ```
+
+
+## v1.4.2 bugfix
+
+- Fixes Lighthouse runner compatibility with current `chrome-launcher` ESM exports by using a namespace import instead of a default import.

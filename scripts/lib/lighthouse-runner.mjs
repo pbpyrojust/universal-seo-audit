@@ -1,10 +1,10 @@
 
 import lighthouse from 'lighthouse';
-import chromeLauncher from 'chrome-launcher';
+import * as chromeLauncher from 'chrome-launcher';
 
 export async function runLighthouseAudit(url) {
-  const chrome = await chromeLauncher.launch({chromeFlags: ['--headless', '--no-sandbox']});
-  const result = await lighthouse(url, {port: chrome.port, output: 'json', logLevel: 'error'});
+  const chrome = await chromeLauncher.launch({ chromeFlags: ['--headless', '--no-sandbox'] });
+  const result = await lighthouse(url, { port: chrome.port, output: 'json', logLevel: 'error' });
   const lhr = result.lhr;
   await chrome.kill();
 
