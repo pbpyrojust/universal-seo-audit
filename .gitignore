@@ -33,3 +33,7 @@ build/
 tmp/
 temp/
 .cache/
+# macOS / hidden system files
+# Windows system files
+# Logs / temp
+# Editors

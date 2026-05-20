@@ -37,6 +37,36 @@ function normalizeUrl(u) {
 function sameOrigin(a, b) {
   try { return new URL(a).origin === new URL(b).origin; } catch { return false; }
 }
+function canonicalStatus(pageUrl, canonicalUrl, count) {
+  if (!canonicalUrl) return 'missing';
+  if (Number(count || 0) > 1) return 'multiple';
+  try {
+    const page = new URL(normalizeUrl(pageUrl));
+    const canonical = new URL(normalizeUrl(canonicalUrl));
+    if (page.origin !== canonical.origin) return 'cross_domain';
+    if (page.toString() === canonical.toString()) return 'self_referencing';
+    return 'mismatch';
+  } catch {
+    return 'invalid';
+  }
+}
+function validateHreflangs(hreflangs = []) {
+  const seen = new Set();
+  let invalid = 0;
+  let duplicates = 0;
+  let hasXDefault = false;
+  for (const h of hreflangs) {
+    const code = String(h.hreflang || '').trim().toLowerCase();
+    const href = String(h.href || '').trim();
+    if (!code || !href) invalid++;
+    if (code === 'x-default') hasXDefault = true;
+    if (code) {
+      if (seen.has(code)) duplicates++;
+      seen.add(code);
+    }
+  }
+  return { invalid, duplicates, hasXDefault: hasXDefault ? 'yes' : 'no' };
+}
 function getSection(urlStr) {
   try {
     const u = new URL(urlStr);
@@ -119,7 +149,12 @@ while (queue.length && seenPages.size < maxPages) {
     document.querySelectorAll('[style]').forEach((el) => push(el.getAttribute('style') || '', 'style', '', 'inline-style'));
     document.querySelectorAll('style').forEach((el) => push(el.textContent || '', 'style', '', 'style-tag'));
     const links = Array.from(document.querySelectorAll('a[href]')).map((a) => a.href || a.getAttribute('href')).filter(Boolean);
-    return { title: document.title || '', assets, links };
+    const canonicals = Array.from(document.querySelectorAll('link[rel="canonical" i]')).map((el) => el.href || el.getAttribute('href') || '').filter(Boolean);
+    const hreflangs = Array.from(document.querySelectorAll('link[rel="alternate" i][hreflang]')).map((el) => ({
+      hreflang: el.getAttribute('hreflang') || '',
+      href: el.href || el.getAttribute('href') || ''
+    }));
+    return { title: document.title || '', assets, links, canonicals, hreflangs };
   });
 
   for (const href of data.links) {
@@ -179,7 +214,39 @@ while (queue.length && seenPages.size < maxPages) {
   }
 
   const section = getSection(url);
-  pageRows.push({ page_url: url, title: data.title, status_code: status, asset_count: assetRows.length - pageAssetStart, section });
+  const canonical = (data.canonicals && data.canonicals[0]) ? normalizeUrl(data.canonicals[0]) : '';
+  const canonical_count = (data.canonicals || []).length;
+  const canonical_status = canonicalStatus(url, canonical, canonical_count);
+  const hreflang_count = (data.hreflangs || []).length;
+  const hreflangValidation = validateHreflangs(data.hreflangs || []);
+  const hreflang_values = (data.hreflangs || []).map((h) => `${h.hreflang}:${h.href}`).join(' | ');
+
+  if (!canonical) issueRows.push({ page_url: url, issue_type: 'canonical_missing', severity: 'medium', details: 'Missing canonical tag.' });
+  if (canonical_count > 1) issueRows.push({ page_url: url, issue_type: 'canonical_duplicate', severity: 'high', details: `Found ${canonical_count} canonical tags: ${(data.canonicals || []).join(' | ')}` });
+  if (canonical_status === 'cross_domain') issueRows.push({ page_url: url, issue_type: 'canonical_cross_domain', severity: 'high', details: `Canonical points to another domain: ${canonical}` });
+  if (canonical_status === 'mismatch') issueRows.push({ page_url: url, issue_type: 'canonical_mismatch', severity: 'medium', details: `Canonical does not match crawled URL: ${canonical}` });
+  if (canonical_status === 'invalid') issueRows.push({ page_url: url, issue_type: 'canonical_invalid', severity: 'high', details: `Canonical URL could not be parsed: ${canonical}` });
+
+  if (hreflang_count === 0) issueRows.push({ page_url: url, issue_type: 'hreflang_missing', severity: 'low', details: 'No hreflang tags found. This is only an issue for multilingual or multi-region sites.' });
+  if (hreflangValidation.invalid > 0) issueRows.push({ page_url: url, issue_type: 'hreflang_invalid', severity: 'medium', details: `${hreflangValidation.invalid} hreflang tag(s) are missing hreflang or href values.` });
+  if (hreflangValidation.duplicates > 0) issueRows.push({ page_url: url, issue_type: 'hreflang_duplicate', severity: 'medium', details: `${hreflangValidation.duplicates} duplicate hreflang value(s) found.` });
+
+  pageRows.push({
+    page_url: url,
+    title: data.title,
+    status_code: status,
+    canonical,
+    canonical_count,
+    canonical_status,
+    hreflang_present: hreflang_count > 0 ? 'yes' : 'no',
+    hreflang_count,
+    hreflang_invalid_count: hreflangValidation.invalid,
+    hreflang_duplicate_count: hreflangValidation.duplicates,
+    hreflang_has_x_default: hreflangValidation.hasXDefault,
+    hreflang_values,
+    asset_count: assetRows.length - pageAssetStart,
+    section
+  });
   const sec = sectionMap.get(section) || { section, page_count: 0, asset_count: 0, issue_count: 0 };
   sec.page_count += 1;
   sec.asset_count += (assetRows.length - pageAssetStart);
@@ -201,7 +268,7 @@ if (uniqueExternalHosts.length > 1) {
   issueRows.push({ page_url: site, issue_type: 'cdn_inconsistency', severity: 'medium', details: `Multiple external asset hosts detected: ${uniqueExternalHosts.join(' | ')}` });
 }
 
-writeCsv(path.join(outDir, 'seo-pages.csv'), ['page_url','title','status_code','asset_count','section'], pageRows);
+writeCsv(path.join(outDir, 'seo-pages.csv'), ['page_url','title','status_code','canonical','canonical_count','canonical_status','hreflang_present','hreflang_count','hreflang_invalid_count','hreflang_duplicate_count','hreflang_has_x_default','hreflang_values','asset_count','section'], pageRows);
 writeCsv(path.join(outDir, 'seo-assets.csv'), ['page_url','asset_url','asset_type','source','status_code','final_url','asset_host','final_host','ok','broken','host_mismatch','www_mismatch','non_canonical_host','staging_production_mixup','protocol_mismatch','content_type'], assetRows);
 writeCsv(path.join(outDir, 'seo-issues.csv'), ['page_url','issue_type','severity','details'], issueRows);
 writeCsv(path.join(outDir, 'seo-section-summary.csv'), ['section','page_count','asset_count','issue_count'], Array.from(sectionMap.values()));
