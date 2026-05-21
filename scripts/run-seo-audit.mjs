@@ -211,24 +211,62 @@ while (queue.length && (!maxPages || seenPages.size < maxPages)) {
     status = 0;
   }
 
-  const data = await page.evaluate(() => {
-    const assets = [];
-    const push = (url, tagName, rel = '', source = '') => { if (url) assets.push({ url, tagName, rel, source }); };
-    document.querySelectorAll('img[src]').forEach((el) => push(el.currentSrc || el.src || el.getAttribute('src'), 'img', '', 'img'));
-    document.querySelectorAll('script[src]').forEach((el) => push(el.src || el.getAttribute('src'), 'script', '', 'script'));
-    document.querySelectorAll('link[href]').forEach((el) => push(el.href || el.getAttribute('href'), 'link', el.getAttribute('rel') || '', 'link'));
-    document.querySelectorAll('source[src]').forEach((el) => push(el.src || el.getAttribute('src'), 'source', '', 'source'));
-    document.querySelectorAll('video[src], audio[src]').forEach((el) => push(el.src || el.getAttribute('src'), el.tagName.toLowerCase(), '', el.tagName.toLowerCase()));
-    document.querySelectorAll('[style]').forEach((el) => push(el.getAttribute('style') || '', 'style', '', 'inline-style'));
-    document.querySelectorAll('style').forEach((el) => push(el.textContent || '', 'style', '', 'style-tag'));
-    const links = Array.from(document.querySelectorAll('a[href]')).map((a) => a.href || a.getAttribute('href')).filter(Boolean);
-    const canonicals = Array.from(document.querySelectorAll('link[rel="canonical" i]')).map((el) => el.href || el.getAttribute('href') || '').filter(Boolean);
-    const hreflangs = Array.from(document.querySelectorAll('link[rel="alternate" i][hreflang]')).map((el) => ({
-      hreflang: el.getAttribute('hreflang') || '',
-      href: el.href || el.getAttribute('href') || ''
-    }));
-    return { title: document.title || '', assets, links, canonicals, hreflangs };
-  });
+  let data;
+  try {
+    data = await page.evaluate(() => {
+      const assets = [];
+      const push = (url, tagName, rel = '', source = '') => { if (url) assets.push({ url, tagName, rel, source }); };
+      document.querySelectorAll('img[src]').forEach((el) => push(el.currentSrc || el.src || el.getAttribute('src'), 'img', '', 'img'));
+      document.querySelectorAll('script[src]').forEach((el) => push(el.src || el.getAttribute('src'), 'script', '', 'script'));
+      document.querySelectorAll('link[href]').forEach((el) => push(el.href || el.getAttribute('href'), 'link', el.getAttribute('rel') || '', 'link'));
+      document.querySelectorAll('source[src]').forEach((el) => push(el.src || el.getAttribute('src'), 'source', '', 'source'));
+      document.querySelectorAll('video[src], audio[src]').forEach((el) => push(el.src || el.getAttribute('src'), el.tagName.toLowerCase(), '', el.tagName.toLowerCase()));
+      document.querySelectorAll('[style]').forEach((el) => push(el.getAttribute('style') || '', 'style', '', 'inline-style'));
+      document.querySelectorAll('style').forEach((el) => push(el.textContent || '', 'style', '', 'style-tag'));
+      const links = Array.from(document.querySelectorAll('a[href]')).map((a) => a.href || a.getAttribute('href')).filter(Boolean);
+      const canonicals = Array.from(document.querySelectorAll('link[rel="canonical" i]')).map((el) => el.href || el.getAttribute('href') || '').filter(Boolean);
+      const hreflangs = Array.from(document.querySelectorAll('link[rel="alternate" i][hreflang]')).map((el) => ({
+        hreflang: el.getAttribute('hreflang') || '',
+        href: el.href || el.getAttribute('href') || ''
+      }));
+      return { title: document.title || '', assets, links, canonicals, hreflangs };
+    });
+  } catch (evaluateError) {
+    console.warn(`Warning: DOM extraction failed for ${url}. Retrying after reload. ${evaluateError?.message || evaluateError}`);
+    try {
+      const retryRes = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 90000 });
+      status = retryRes?.status?.() || status;
+      await page.waitForTimeout(750);
+      data = await page.evaluate(() => {
+        const assets = [];
+        const push = (url, tagName, rel = '', source = '') => { if (url) assets.push({ url, tagName, rel, source }); };
+        document.querySelectorAll('img[src]').forEach((el) => push(el.currentSrc || el.src || el.getAttribute('src'), 'img', '', 'img'));
+        document.querySelectorAll('script[src]').forEach((el) => push(el.src || el.getAttribute('src'), 'script', '', 'script'));
+        document.querySelectorAll('link[href]').forEach((el) => push(el.href || el.getAttribute('href'), 'link', el.getAttribute('rel') || '', 'link'));
+        document.querySelectorAll('source[src]').forEach((el) => push(el.src || el.getAttribute('src'), 'source', '', 'source'));
+        document.querySelectorAll('video[src], audio[src]').forEach((el) => push(el.src || el.getAttribute('src'), el.tagName.toLowerCase(), '', el.tagName.toLowerCase()));
+        document.querySelectorAll('[style]').forEach((el) => push(el.getAttribute('style') || '', 'style', '', 'inline-style'));
+        document.querySelectorAll('style').forEach((el) => push(el.textContent || '', 'style', '', 'style-tag'));
+        const links = Array.from(document.querySelectorAll('a[href]')).map((a) => a.href || a.getAttribute('href')).filter(Boolean);
+        const canonicals = Array.from(document.querySelectorAll('link[rel="canonical" i]')).map((el) => el.href || el.getAttribute('href') || '').filter(Boolean);
+        const hreflangs = Array.from(document.querySelectorAll('link[rel="alternate" i][hreflang]')).map((el) => ({
+          hreflang: el.getAttribute('hreflang') || '',
+          href: el.href || el.getAttribute('href') || ''
+        }));
+        return { title: document.title || '', assets, links, canonicals, hreflangs };
+      });
+    } catch (retryError) {
+      console.warn(`Warning: Skipping DOM extraction for ${url}. ${retryError?.message || retryError}`);
+      issueRows.push({
+        page_url: url,
+        issue_type: 'page_extraction_error',
+        severity: 'high',
+        details: retryError?.message || String(retryError)
+      });
+      pageRows.push({ page_url: url, title: '', status_code: status, asset_count: 0, section: getSection(url), canonical_count: 0, canonical: '', hreflang_count: 0, hreflangs: '' });
+      continue;
+    }
+  }
 
   for (const href of data.links) {
     try {

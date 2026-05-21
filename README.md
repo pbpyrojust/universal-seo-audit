@@ -1,6 +1,6 @@
 # Universal SEO Audit
 
-**Version:** 1.4.3
+**Version:** 1.4.4
 
 Universal SEO Audit is a technical SEO and asset integrity audit CLI for development, staging, protected, and noindex sites.
 
@@ -112,3 +112,8 @@ node scripts/run-seo-audit.mjs --site https://example.com --content-sitemaps-onl
 ```
 
 When `--lighthouse` is enabled on a large sitemap, the scan can take a long time. Use `--max-pages 10` for a Lighthouse sample.
+
+
+## Stability note
+
+Some sites trigger client-side redirects, lazy hydration, or page refreshes while the audit is extracting DOM data. The runner now retries DOM extraction once and records a `page_extraction_error` issue instead of crashing the full audit.
