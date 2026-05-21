@@ -1,6 +1,6 @@
 {
   "name": "universal-seo-audit",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "type": "module",
   "packageManager": "pnpm@10.8.0",
   "scripts": {

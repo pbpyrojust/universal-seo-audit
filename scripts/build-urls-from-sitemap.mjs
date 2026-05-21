@@ -22,10 +22,13 @@ function normalizeUrl(u) {
     return url.toString();
   } catch { return String(u || "").trim(); }
 }
-function selectContentSitemaps(urls, includeSitemaps = [], includeAllSitemaps = false) {
-  if (includeAllSitemaps) return urls;
+function selectContentSitemaps(urls, includeSitemaps = [], contentSitemapsOnly = false) {
   if (includeSitemaps.length) return urls.filter((u) => includeSitemaps.some((x) => u.includes(x)));
-  return urls.filter((u) => /(post|page|wp-sitemap-posts|portfolio|leadership|webinar|podcast|news|testimonial)/i.test(u));
+  if (contentSitemapsOnly) {
+    return urls.filter((u) => /(post|page|wp-sitemap-posts|portfolio|leadership|webinar|podcast|news|testimonial)/i.test(u));
+  }
+  // Default for the SEO tool is full sitemap coverage so larger sites are not under-scanned.
+  return urls;
 }
 async function fetchText(url) {
   const res = await fetch(url, { headers: { "user-agent": "Universal-SEO-Audit" } });
@@ -39,7 +42,7 @@ async function main() {
   const site = args.site;
   const out = args.out || "./urls.txt";
   const includeSitemaps = splitCsvish(args["include-sitemaps"]);
-  const includeAllSitemaps = Boolean(args["include-all-sitemaps"]);
+  const contentSitemapsOnly = Boolean(args["content-sitemaps-only"]);
   if (!site) throw new Error("Missing --site");
   const base = new URL(site).origin;
   const candidates = [args["sitemap-url"], `${base}/sitemap_index.xml`, `${base}/wp-sitemap.xml`, `${base}/sitemap.xml`].filter(Boolean);
@@ -53,7 +56,7 @@ async function main() {
   let urls = [];
   if (/<sitemapindex/i.test(xml)) {
     const sitemapUrls = parseSitemapIndex(xml);
-    const selected = selectContentSitemaps(sitemapUrls, includeSitemaps, includeAllSitemaps);
+    const selected = selectContentSitemaps(sitemapUrls, includeSitemaps, contentSitemapsOnly);
     console.log(`Found ${sitemapUrls.length} sitemaps in index; selected ${selected.length}`);
     for (const su of selected) {
       console.log(`Processing ${su}`);

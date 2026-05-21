@@ -1,6 +1,6 @@
 # Universal SEO Audit
 
-**Version:** 1.4.2
+**Version:** 1.4.3
 
 Universal SEO Audit is a technical SEO and asset integrity audit CLI for development, staging, protected, and noindex sites.
 
@@ -85,3 +85,30 @@ node scripts/run-seo-audit.mjs --site https://www.example.com --brand-config ./b
 ## v1.4.2 bugfix
 
 - Fixes Lighthouse runner compatibility with current `chrome-launcher` ESM exports by using a namespace import instead of a default import.
+
+
+## Sitemap-first scanning
+
+By default, the main command now discovers URLs from the site's sitemap before scanning. This prevents large WordPress or multilingual sites from being under-scanned by homepage crawl limits.
+
+```bash
+node scripts/run-seo-audit.mjs --site https://example.com
+```
+
+Useful options:
+
+```bash
+# Limit the scan size
+node scripts/run-seo-audit.mjs --site https://example.com --max-pages 50
+
+# Use a specific sitemap
+node scripts/run-seo-audit.mjs --site https://example.com --sitemap-url https://example.com/sitemap.xml
+
+# Use browser crawl mode instead of sitemap discovery
+node scripts/run-seo-audit.mjs --site https://example.com --crawl --max-pages 50
+
+# For WordPress sites, scan only common content sitemaps instead of all sitemap files
+node scripts/run-seo-audit.mjs --site https://example.com --content-sitemaps-only
+```
+
+When `--lighthouse` is enabled on a large sitemap, the scan can take a long time. Use `--max-pages 10` for a Lighthouse sample.

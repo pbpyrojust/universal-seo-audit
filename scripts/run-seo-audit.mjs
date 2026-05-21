@@ -96,13 +96,66 @@ function extractCssUrls(cssText, baseUrl) {
   return urls;
 }
 
+async function fetchText(url) {
+  const res = await fetch(url, {
+    headers: {
+      'user-agent': 'Universal-SEO-Audit',
+      'accept': 'text/plain, text/html, application/xml, text/xml, */*'
+    }
+  });
+  if (!res.ok) throw new Error(`Failed ${res.status}: ${url}`);
+  return await res.text();
+}
+function parseSitemapLocs(xml) {
+  return [...xml.matchAll(/<loc>(.*?)<\/loc>/gsi)].map((m) => normalizeUrl(m[1].trim())).filter(Boolean);
+}
+function filterSitemapUrls(urls, args) {
+  const includeSitemaps = String(args['include-sitemaps'] || '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (includeSitemaps.length) return urls.filter((u) => includeSitemaps.some((part) => u.includes(part)));
+  if (args['content-sitemaps-only']) {
+    return urls.filter((u) => /(post|page|wp-sitemap-posts|portfolio|leadership|webinar|podcast|news|testimonial)/i.test(u));
+  }
+  return urls;
+}
+async function discoverUrlsFromSitemap(site, args) {
+  const base = new URL(site).origin;
+  const candidates = [args['sitemap-url'], `${base}/sitemap_index.xml`, `${base}/wp-sitemap.xml`, `${base}/sitemap.xml`].filter(Boolean);
+  let sitemapUrl = null;
+  let xml = null;
+  for (const c of candidates) {
+    try {
+      xml = await fetchText(c);
+      sitemapUrl = c;
+      break;
+    } catch {}
+  }
+  if (!xml || !sitemapUrl) throw new Error('Could not fetch sitemap');
+  console.log(`Using sitemap: ${sitemapUrl}`);
+  let urls = [];
+  if (/<sitemapindex/i.test(xml)) {
+    const sitemapUrls = filterSitemapUrls(parseSitemapLocs(xml), args);
+    console.log(`Found sitemap index; selected ${sitemapUrls.length} sitemap file(s)`);
+    for (const su of sitemapUrls) {
+      console.log(`Processing ${su}`);
+      try { urls.push(...parseSitemapLocs(await fetchText(su))); } catch (e) { console.warn(`Warning: could not fetch nested sitemap ${su}`); }
+    }
+  } else {
+    urls = parseSitemapLocs(xml);
+  }
+  urls = [...new Set(urls)].filter((u) => {
+    try { return sameOrigin(u, site); } catch { return false; }
+  });
+  if (args['max-pages']) urls = urls.slice(0, Number(args['max-pages']));
+  return urls;
+}
+
 const args = parseArgs(process.argv);
 if (!args.site) {
   console.error('Missing --site');
   process.exit(1);
 }
 const site = args.site;
-const maxPages = Number(args['max-pages'] || 25);
+const maxPages = args['max-pages'] ? Number(args['max-pages']) : null;
 const runLighthouse = Boolean(args['lighthouse']);
 const outDir = path.resolve('reports/' + runId(site));
 fs.mkdirSync(outDir, { recursive: true });
@@ -114,7 +167,27 @@ const browser = await chromium.launch({ headless: true });
 const context = await browser.newContext();
 const page = await context.newPage();
 
-const queue = [normalizeUrl(site)];
+let discoveredUrls = [];
+if (args['urls-file']) {
+  discoveredUrls = fs.readFileSync(path.resolve(args['urls-file']), 'utf8').split(/\r?\n/g).map((s) => s.trim()).filter(Boolean).map(normalizeUrl);
+  if (maxPages) discoveredUrls = discoveredUrls.slice(0, maxPages);
+  console.log(`Using URL file: ${args['urls-file']} (${discoveredUrls.length} URL(s))`);
+} else if (!args['crawl']) {
+  try {
+    discoveredUrls = await discoverUrlsFromSitemap(site, args);
+    console.log(`Discovered ${discoveredUrls.length} URL(s) from sitemap.`);
+    fs.writeFileSync(path.join(outDir, 'urls.txt'), discoveredUrls.join('\n') + '\n', 'utf8');
+  } catch (e) {
+    console.warn('Warning: sitemap discovery failed. Falling back to browser crawl.');
+    discoveredUrls = [normalizeUrl(site)];
+  }
+} else {
+  discoveredUrls = [normalizeUrl(site)];
+}
+if (runLighthouse && discoveredUrls.length > 50 && !maxPages) {
+  console.warn(`Warning: Lighthouse is enabled for ${discoveredUrls.length} URL(s). This can take a very long time. Use --max-pages 10 for a smaller Lighthouse sample.`);
+}
+const queue = [...discoveredUrls];
 const seenPages = new Set();
 const seenAssets = new Set();
 const pageRows = [];
@@ -124,7 +197,7 @@ const lighthouseRows = [];
 const sectionMap = new Map();
 const hostMap = new Map();
 
-while (queue.length && seenPages.size < maxPages) {
+while (queue.length && (!maxPages || seenPages.size < maxPages)) {
   const url = queue.shift();
   if (seenPages.has(url)) continue;
   seenPages.add(url);
@@ -160,7 +233,7 @@ while (queue.length && seenPages.size < maxPages) {
   for (const href of data.links) {
     try {
       const absolute = normalizeUrl(new URL(href, url).toString());
-      if (sameOrigin(absolute, origin) && !seenPages.has(absolute) && queue.length + seenPages.size < maxPages + 10) queue.push(absolute);
+      if (args['crawl'] && sameOrigin(absolute, origin) && !seenPages.has(absolute) && (!maxPages || queue.length + seenPages.size < maxPages)) queue.push(absolute);
     } catch {}
   }
 
