@@ -4,6 +4,7 @@ import path from "node:path";
 import { chromium } from "playwright";
 import { stringify } from "csv-stringify/sync";
 import { runLighthouseAudit } from "./lib/lighthouse-runner.mjs";
+import { agenticIssueFindings, collectAgenticSignals, installWebMcpCapture } from "./lib/agentic-audit.mjs";
 
 function parseArgs(argv) {
   const args = {};
@@ -169,6 +170,10 @@ function classifyIssue(type){
     lcp_slow:["serious","P1-High","High"],
     cls_high:["serious","P1-High","High"],
     tbt_high:["moderate","P2-Medium","Medium"],
+    webmcp_tools_missing:["moderate","P2-Medium","Medium"],
+    accessibility_tree_labels_incomplete:["serious","P1-High","High"],
+    llms_txt_missing:["moderate","P2-Medium","Medium"],
+    agentic_layout_unstable:["serious","P1-High","High"],
     missing_lang:["moderate","P2-Medium","Medium"],
     missing_viewport:["moderate","P2-Medium","Medium"],
     invalid_jsonld:["moderate","P2-Medium","Medium"],
@@ -410,6 +415,7 @@ async function main() {
     const crawlContextOptions = {};
     if (auth.httpCredentials) crawlContextOptions.httpCredentials = auth.httpCredentials;
     const context = await browser.newContext(crawlContextOptions);
+    await installWebMcpCapture(context);
     const page = await context.newPage();
     if (auth.formAuth) await maybePerformFormLogin(page, auth.formAuth, slowMode);
     const queue = [normalizeUrl(startUrl)];
@@ -459,6 +465,7 @@ async function main() {
   const contextOptions = { userAgent: "Universal-SEO-Audit (Playwright)" };
   if (auth.httpCredentials) contextOptions.httpCredentials = auth.httpCredentials;
   const context = await browser.newContext(contextOptions);
+  await installWebMcpCapture(context);
   const page = await context.newPage();
   if (auth.formAuth) await maybePerformFormLogin(page, auth.formAuth, slowMode);
 
@@ -469,6 +476,7 @@ async function main() {
   const socialRows = [];
   const crawlRows = [];
   const lighthouseRows = [];
+  const agenticRows = [];
   const startedAt = Date.now();
   const completedDurations = [];
   let pageErrors = 0;
@@ -640,29 +648,46 @@ async function main() {
         twitter_image: normalizeWhitespace(data.twitter_image),
       });
 
-if (runLighthouse) {
-  try {
-    const lh = await runLighthouseAudit(finalUrl);
-    lighthouseRows.push(lh);
-    if (Number(lh.performance_score || 0) > 0 && Number(lh.performance_score) < 50) add("poor_performance", `Low Lighthouse performance score: ${lh.performance_score}.`, "Improve Core Web Vitals and reduce render-blocking resources.");
-    if (Number(lh.lcp_ms || 0) > 4000) add("lcp_slow", `Largest Contentful Paint is slow: ${lh.lcp_ms}ms.`, "Optimize LCP by reducing server delay, image payloads, and render-blocking dependencies.");
-    if (Number(lh.cls || 0) > 0.25) add("cls_high", `Cumulative Layout Shift is high: ${lh.cls}.`, "Reduce layout shifts by reserving space for media/embeds and stabilizing dynamic UI.");
-    if (Number(lh.tbt_ms || 0) > 300) add("tbt_high", `Total Blocking Time is high: ${lh.tbt_ms}ms.`, "Reduce long main-thread tasks and defer or split heavy JavaScript.");
-  } catch (e) {
-    lighthouseRows.push({
-      page_url: url,
-      final_url: finalUrl,
-      lighthouse_available: "no",
-      performance_score: "",
-      lcp_ms: "",
-      cls: "",
-      tbt_ms: "",
-      fcp_ms: "",
-      si_ms: "",
-      note: `Lighthouse failed: ${String(e?.message || e)}`
-    });
-  }
-}
+      let lighthouseRow = null;
+      if (runLighthouse) {
+        try {
+          const lh = await runLighthouseAudit(finalUrl);
+          lighthouseRow = lh;
+          lighthouseRows.push(lh);
+          if (Number(lh.performance_score || 0) > 0 && Number(lh.performance_score) < 50) add("poor_performance", `Low Lighthouse performance score: ${lh.performance_score}.`, "Improve Core Web Vitals and reduce render-blocking resources.");
+          if (Number(lh.lcp_ms || 0) > 4000) add("lcp_slow", `Largest Contentful Paint is slow: ${lh.lcp_ms}ms.`, "Optimize LCP by reducing server delay, image payloads, and render-blocking dependencies.");
+          if (Number(lh.cls || 0) > 0.25) add("cls_high", `Cumulative Layout Shift is high: ${lh.cls}.`, "Reduce layout shifts by reserving space for media/embeds and stabilizing dynamic UI.");
+          if (Number(lh.tbt_ms || 0) > 300) add("tbt_high", `Total Blocking Time is high: ${lh.tbt_ms}ms.`, "Reduce long main-thread tasks and defer or split heavy JavaScript.");
+        } catch (e) {
+          lighthouseRows.push({
+            page_url: url,
+            final_url: finalUrl,
+            lighthouse_available: "no",
+            performance_score: "",
+            lcp_ms: "",
+            cls: "",
+            tbt_ms: "",
+            fcp_ms: "",
+            si_ms: "",
+            note: `Lighthouse failed: ${String(e?.message || e)}`
+          });
+        }
+      }
+
+      try {
+        const agenticRow = await collectAgenticSignals(page, url, lighthouseRow || {});
+        agenticRows.push(agenticRow);
+        for (const finding of agenticIssueFindings(agenticRow)) {
+          add(finding.issue_type, finding.details, finding.recommendation);
+        }
+      } catch (e) {
+        agenticRows.push({
+          page_url: url,
+          agentic_score: "",
+          agentic_grade: "",
+          note: `Agentic scoring failed: ${String(e?.message || e)}`
+        });
+      }
 
       let missingAlt = 0, filenameAlt = 0, brokenImages = 0, wwwMismatchImages = 0, hostMismatchImages = 0, httpOnHttpsImages = 0;
       for (const img of data.images) {
@@ -837,7 +862,8 @@ if (runLighthouse) {
   fs.writeFileSync(path.join(outDir, "seo-crawl-analysis.csv"), stringify(crawlRows, { header: true, columns: ["page_url","final_url","status_code","section","inlinks","internal_link_depth","orphan_candidate","crawl_discovered","sitemap_only_candidate"] }));
   fs.writeFileSync(path.join(outDir, "seo-section-summary.csv"), stringify(sectionSummaryRows, { header: true, columns: ["section","page_count","total_issues","avg_issue_count","avg_word_count","orphan_candidates"] }));
   fs.writeFileSync(path.join(outDir, "seo-lighthouse.csv"), stringify((runLighthouse ? lighthouseRows : enrichedPages.map((p)=>({ page_url:p.page_url, final_url:p.final_url, lighthouse_available:"no", performance_score:"", lcp_ms:"", cls:"", tbt_ms:"", fcp_ms:"", si_ms:"", note:"Run with --lighthouse to collect Lighthouse/Core Web Vitals metrics." }))), { header: true, columns: ["page_url","final_url","lighthouse_available","performance_score","lcp_ms","cls","tbt_ms","fcp_ms","si_ms","note"] }));
-  fs.writeFileSync(path.join(outDir, "seo-report.json"), JSON.stringify({ runId, scanned: urls, pages: enrichedPages, issues: issueRows, images: imageRows, structured: structuredRows, social: socialRows }, null, 2));
+  fs.writeFileSync(path.join(outDir, "seo-agentic.csv"), stringify(agenticRows, { header: true, columns: ["page_url","agentic_score","agentic_grade","webmcp_protocol_score","webmcp_tools_registered","webmcp_tools_with_schema","webmcp_reference_count","webmcp_tool_names","accessibility_tree_score","form_control_count","named_form_control_count","clickable_count","named_clickable_count","semantic_data_score","llms_txt_present","llms_txt_url","llms_txt_status","llms_txt_bytes","llms_txt_headings","llms_txt_links","layout_stability_score","cls","visible_image_count","images_with_dimensions_count","note"] }));
+  fs.writeFileSync(path.join(outDir, "seo-report.json"), JSON.stringify({ runId, scanned: urls, pages: enrichedPages, issues: issueRows, images: imageRows, structured: structuredRows, social: socialRows, agentic: agenticRows }, null, 2));
   fs.writeFileSync(path.join(outDir, "seo-run-metadata.json"), JSON.stringify({
     runId,
     startedAt: new Date(startedAt).toISOString(),
@@ -849,6 +875,7 @@ if (runLighthouse) {
     structuredRows: structuredRows.length,
     socialRows: socialRows.length,
     crawlRows: crawlRows.length,
+    agenticRows: agenticRows.length,
     sectionSummaryRows: sectionSummaryRows.length,
     lighthouseRows: (runLighthouse ? lighthouseRows.length : 0),
     byIssueType,

@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { chromium } from 'playwright';
 import { runLighthouseAudit } from './lib/lighthouse-runner.mjs';
 import { checkAsset, classifyAssetType } from './lib/asset-checker.mjs';
+import { agenticIssueFindings, collectAgenticSignals, installWebMcpCapture } from './lib/agentic-audit.mjs';
 
 function parseArgs(argv) {
   const args = {};
@@ -165,6 +166,7 @@ const origin = new URL(site).origin;
 const canonicalHost = new URL(site).host;
 const browser = await chromium.launch({ headless: true });
 const context = await browser.newContext();
+await installWebMcpCapture(context);
 const page = await context.newPage();
 
 let discoveredUrls = [];
@@ -194,6 +196,7 @@ const pageRows = [];
 const assetRows = [];
 const issueRows = [];
 const lighthouseRows = [];
+const agenticRows = [];
 const sectionMap = new Map();
 const hostMap = new Map();
 
@@ -364,10 +367,30 @@ while (queue.length && (!maxPages || seenPages.size < maxPages)) {
   sec.issue_count += issueRows.filter((i) => i.page_url === url).length;
   sectionMap.set(section, sec);
 
+  let lighthouseRow = null;
   if (runLighthouse) {
     console.log('Running Lighthouse:', url);
-    try { lighthouseRows.push(await runLighthouseAudit(url)); }
-    catch (e) { lighthouseRows.push({ url, performance: '', lcp: '', cls: '', tbt: '', fcp: '', error: String(e) }); }
+    try {
+      lighthouseRow = await runLighthouseAudit(url);
+      lighthouseRows.push(lighthouseRow);
+    }
+    catch (e) {
+      lighthouseRow = { url, page_url: url, final_url: url, lighthouse_available: 'no', performance: '', performance_score: '', lcp: '', lcp_ms: '', cls: '', tbt: '', tbt_ms: '', fcp: '', fcp_ms: '', si_ms: '', error: String(e), note: String(e) };
+      lighthouseRows.push(lighthouseRow);
+    }
+  }
+
+  try {
+    const agenticRow = await collectAgenticSignals(page, url, lighthouseRow || {});
+    agenticRows.push(agenticRow);
+    const findings = agenticIssueFindings(agenticRow);
+    for (const finding of findings) {
+      issueRows.push({ page_url: url, issue_type: finding.issue_type, severity: finding.severity, details: finding.details });
+    }
+    const sectionSummary = sectionMap.get(section);
+    if (sectionSummary) sectionSummary.issue_count += findings.length;
+  } catch (e) {
+    agenticRows.push({ page_url: url, agentic_score: '', agentic_grade: '', note: `Agentic scoring failed: ${String(e?.message || e)}` });
   }
 }
 
@@ -385,6 +408,7 @@ writeCsv(path.join(outDir, 'seo-issues.csv'), ['page_url','issue_type','severity
 writeCsv(path.join(outDir, 'seo-section-summary.csv'), ['section','page_count','asset_count','issue_count'], Array.from(sectionMap.values()));
 writeCsv(path.join(outDir, 'seo-asset-host-summary.csv'), ['host','count'], Array.from(hostMap.entries()).sort((a,b) => b[1] - a[1]).map(([host, count]) => ({ host, count })));
 if (runLighthouse) writeCsv(path.join(outDir, 'seo-lighthouse.csv'), ['url','performance','lcp','cls','tbt','fcp','error'], lighthouseRows);
+writeCsv(path.join(outDir, 'seo-agentic.csv'), ['page_url','agentic_score','agentic_grade','webmcp_protocol_score','webmcp_tools_registered','webmcp_tools_with_schema','webmcp_reference_count','webmcp_tool_names','accessibility_tree_score','form_control_count','named_form_control_count','clickable_count','named_clickable_count','semantic_data_score','llms_txt_present','llms_txt_url','llms_txt_status','llms_txt_bytes','llms_txt_headings','llms_txt_links','layout_stability_score','cls','visible_image_count','images_with_dimensions_count','note'], agenticRows);
 if (!args['no-visual-report']) {
   console.log('Generating visual dashboard and PDF report...');
   const visualArgs = [path.resolve('scripts/generate-visual-report.mjs'), '--run-dir', outDir, '--site', site];

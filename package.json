@@ -1,15 +1,16 @@
 {
   "name": "universal-seo-audit",
-  "version": "1.4.4",
+  "version": "1.4.5",
   "type": "module",
   "packageManager": "pnpm@10.8.0",
   "scripts": {
     "audit": "node scripts/run-seo-audit.mjs"
   },
   "dependencies": {
-    "playwright": "^1.44.0",
-    "lighthouse": "^12.0.0",
-    "chrome-launcher": "^1.0.0"
+    "chrome-launcher": "^1.1.2",
+    "csv-stringify": "^6.6.0",
+    "lighthouse": "^12.8.0",
+    "playwright": "^1.57.0"
   },
   "description": "Technical SEO and asset integrity audit CLI with visual HTML dashboard, branded PDF reporting, and Lighthouse support for development, staging, protected, and noindex sites."
 }

@@ -60,6 +60,7 @@ const pages = loadCsvIfExists(path.join(runDir, "seo-pages.csv"));
 const crawl = loadCsvIfExists(path.join(runDir, "seo-crawl-analysis.csv"));
 const sections = loadCsvIfExists(path.join(runDir, "seo-section-summary.csv"));
 const dups = loadCsvIfExists(path.join(runDir, "seo-duplicates.csv"));
+const agentic = loadCsvIfExists(path.join(runDir, "seo-agentic.csv"));
 const metaPath = path.join(runDir, "seo-run-metadata.json");
 const meta = fs.existsSync(metaPath) ? JSON.parse(fs.readFileSync(metaPath, "utf8")) : {};
 
@@ -70,6 +71,9 @@ const topIssueTypes = Object.entries(
     return acc;
   }, {})
 ).sort((a, b) => b[1] - a[1]).slice(0, 15);
+const avgAgenticScore = agentic.length ? (agentic.reduce((sum, row) => sum + (Number(row.agentic_score) || 0), 0) / agentic.length).toFixed(1) : "n/a";
+const avgWebMcpScore = agentic.length ? (agentic.reduce((sum, row) => sum + (Number(row.webmcp_protocol_score) || 0), 0) / agentic.length).toFixed(1) : "n/a";
+const llmsTxtPresent = agentic.filter((row) => row.llms_txt_present === "yes").length;
 
 const out = [];
 out.push("# SEO Audit Summary");
@@ -79,7 +83,7 @@ out.push(`Pages scanned: ${meta.pagesScanned || pages.length}`);
 out.push(`Issues found: ${meta.issuesFound || issues.length}`);
 out.push("");
 out.push("## What this tool reports");
-out.push("Universal SEO Audit is intended for technical SEO validation on development, staging, protected, and noindex sites. It renders pages in a real browser and reports technical issues, metadata gaps, crawl findings, schema/social coverage, and ticket-ready remediation items.");
+out.push("Universal SEO Audit is intended for technical SEO validation on development, staging, protected, and noindex sites. It renders pages in a real browser and reports technical issues, metadata gaps, crawl findings, schema/social coverage, Lighthouse/Core Web Vitals, agentic-readiness signals, and ticket-ready remediation items.");
 out.push("");
 out.push("## Highest-priority findings");
 out.push(`- Broken/error pages: ${count("http_4xx") + count("http_5xx")}`);
@@ -92,12 +96,22 @@ out.push(`- Missing schema: ${count("missing_schema")}`);
 out.push(`- Missing Open Graph images: ${count("og_image_missing")}`);
 out.push(`- Orphan candidates: ${count("orphan_candidate")}`);
 out.push(`- Duplicate-content clusters: ${count("duplicate_content_cluster") || dups.length}`);
+out.push(`- WebMCP tools missing: ${count("webmcp_tools_missing")}`);
+out.push(`- Accessibility-tree label gaps: ${count("accessibility_tree_labels_incomplete")}`);
+out.push(`- Missing llms.txt: ${count("llms_txt_missing")}`);
+out.push(`- Agentic layout instability: ${count("agentic_layout_unstable")}`);
+out.push("");
+out.push("## Agentic readiness");
+out.push(`- Average agentic score: ${avgAgenticScore}`);
+out.push(`- Average WebMCP protocol score: ${avgWebMcpScore}`);
+out.push(`- llms.txt present: ${llmsTxtPresent}/${agentic.length || 0} page sample(s)`);
 out.push("");
 out.push("## Priority order");
 out.push("1. Fix HTTP 4xx/5xx pages and broken internal links");
 out.push("2. Fix missing/duplicate titles and canonical problems");
 out.push("3. Fix missing H1s, orphan candidates, duplicate-content clusters, and missing schema/Open Graph coverage");
-out.push("4. Clean up duplicate meta descriptions, noindex/nofollow directives, image alt issues, and render-weight warnings");
+out.push("4. Improve agentic-readiness gaps: WebMCP tool registration, accessibility-tree labels, llms.txt coverage, and stable controls");
+out.push("5. Clean up duplicate meta descriptions, noindex/nofollow directives, image alt issues, and render-weight warnings");
 out.push("");
 out.push("## Section summary");
 if (sections.length) {
@@ -130,6 +144,7 @@ out.push("- seo-images.csv");
 out.push("- seo-structured-data.csv");
 out.push("- seo-social.csv");
 out.push("- seo-crawl-analysis.csv");
+out.push("- seo-agentic.csv");
 out.push("- seo-ticket-backlog.csv");
 out.push("- seo-report.json");
 out.push("- seo-section-summary.csv");

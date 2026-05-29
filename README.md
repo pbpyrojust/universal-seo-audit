@@ -1,6 +1,6 @@
 # Universal SEO Audit
 
-**Version:** 1.4.4
+**Version:** 1.4.5
 
 Universal SEO Audit is a technical SEO and asset integrity audit CLI for development, staging, protected, and noindex sites.
 
@@ -11,6 +11,8 @@ Universal SEO Audit is a technical SEO and asset integrity audit CLI for develop
 - technical SEO backlog generation
 - metadata/schema/canonical/Open Graph validation
 - canonical and hreflang validation, including missing/duplicate canonical tags and missing/invalid/duplicate hreflang tags
+- Lighthouse/Core Web Vitals and agentic-readiness scoring for browser-native AI agents
+- WebMCP protocol, accessibility-tree labels, `llms.txt`, and layout stability checks
 - asset integrity validation across images, JS, CSS, fonts, and root files
 - staging/production and `www` / non-`www` asset mismatch detection
 - client-facing branded HTML/PDF reports
@@ -72,6 +74,17 @@ It checks for:
 - duplicate hreflang values
 
 Note: missing hreflang is reported as low severity because many single-language sites do not need hreflang.
+
+## Agentic Lighthouse scoring
+
+Every scan now writes `seo-agentic.csv` with a 0-100 `agentic_score` and sub-scores for:
+
+- WebMCP Protocol: detects browser-native tool registration signals such as `navigator.modelContext.registerTool()`, schema-backed tools, and functional action hints.
+- Accessibility Trees: checks whether form controls and clickable controls have labels agents can discover through semantic HTML and ARIA.
+- Semantic Data Formatting: checks for a usable root-level `/llms.txt` with enough machine-readable structure to orient LLMs.
+- Layout Stability: uses Lighthouse CLS when `--lighthouse` is enabled and combines it with DOM stability hints such as explicit media sizing.
+
+Agentic findings are also added to `seo-issues.csv` as `webmcp_tools_missing`, `accessibility_tree_labels_incomplete`, `llms_txt_missing`, and `agentic_layout_unstable`.
 
 ## Main commands
 
