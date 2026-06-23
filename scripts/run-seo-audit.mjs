@@ -6,6 +6,7 @@ import { chromium } from 'playwright';
 import { runLighthouseAudit } from './lib/lighthouse-runner.mjs';
 import { checkAsset, classifyAssetType } from './lib/asset-checker.mjs';
 import { agenticIssueFindings, collectAgenticSignals, installWebMcpCapture } from './lib/agentic-audit.mjs';
+import { collectScriptInventory, scriptAuditIssueFindings, buildCspSummary } from './lib/script-audit.mjs';
 
 function parseArgs(argv) {
   const args = {};
@@ -197,6 +198,7 @@ const assetRows = [];
 const issueRows = [];
 const lighthouseRows = [];
 const agenticRows = [];
+const scriptRows = [];
 const sectionMap = new Map();
 const hostMap = new Map();
 
@@ -392,6 +394,22 @@ while (queue.length && (!maxPages || seenPages.size < maxPages)) {
   } catch (e) {
     agenticRows.push({ page_url: url, agentic_score: '', agentic_grade: '', note: `Agentic scoring failed: ${String(e?.message || e)}` });
   }
+
+  try {
+    const scriptRow = await collectScriptInventory(page, url);
+    const csvRow = { ...scriptRow };
+    delete csvRow.external_scripts;
+    delete csvRow.inline_handler_samples;
+    scriptRows.push(csvRow);
+    const scriptFindings = scriptAuditIssueFindings(scriptRow);
+    for (const finding of scriptFindings) {
+      issueRows.push({ page_url: url, issue_type: finding.issue_type, severity: finding.severity, details: finding.details });
+    }
+    const sectionSummary = sectionMap.get(section);
+    if (sectionSummary) sectionSummary.issue_count += scriptFindings.length;
+  } catch (e) {
+    scriptRows.push({ page_url: url, total_script_count: 0, note: `Script audit failed: ${String(e?.message || e)}` });
+  }
 }
 
 await browser.close();
@@ -409,6 +427,9 @@ writeCsv(path.join(outDir, 'seo-section-summary.csv'), ['section','page_count','
 writeCsv(path.join(outDir, 'seo-asset-host-summary.csv'), ['host','count'], Array.from(hostMap.entries()).sort((a,b) => b[1] - a[1]).map(([host, count]) => ({ host, count })));
 if (runLighthouse) writeCsv(path.join(outDir, 'seo-lighthouse.csv'), ['url','performance','lcp','cls','tbt','fcp','error'], lighthouseRows);
 writeCsv(path.join(outDir, 'seo-agentic.csv'), ['page_url','agentic_score','agentic_grade','webmcp_protocol_score','webmcp_tools_registered','webmcp_tools_with_schema','webmcp_reference_count','webmcp_tool_names','accessibility_tree_score','form_control_count','named_form_control_count','clickable_count','named_clickable_count','semantic_data_score','llms_txt_present','llms_txt_url','llms_txt_status','llms_txt_bytes','llms_txt_headings','llms_txt_links','layout_stability_score','cls','visible_image_count','images_with_dimensions_count','note'], agenticRows);
+writeCsv(path.join(outDir, 'seo-scripts.csv'), ['page_url','external_script_count','inline_script_count','total_script_count','inline_event_handler_count','javascript_link_count','first_party_script_domains','first_party_script_count','third_party_script_domains','third_party_script_count','unique_script_domains','uses_eval','uses_document_write','uses_innerhtml','all_inline_have_nonce','all_external_have_integrity','async_script_count','defer_script_count','render_blocking_script_count','needs_unsafe_inline','needs_unsafe_eval','suggested_script_src'], scriptRows);
+const cspSummary = buildCspSummary(scriptRows, origin);
+writeCsv(path.join(outDir, 'seo-csp-summary.csv'), ['pages_audited','total_external_scripts','total_inline_scripts','total_inline_event_handlers','total_javascript_links','total_render_blocking','unique_third_party_domains','third_party_domains','needs_unsafe_inline','needs_unsafe_eval','pages_with_eval','pages_with_document_write','suggested_script_src'], [cspSummary]);
 if (!args['no-visual-report']) {
   console.log('Generating visual dashboard and PDF report...');
   const visualArgs = [path.resolve('scripts/generate-visual-report.mjs'), '--run-dir', outDir, '--site', site];
