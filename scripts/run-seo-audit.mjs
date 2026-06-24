@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { spawnSync } from 'node:child_process';
 import { chromium } from 'playwright';
-import { runLighthouseAudit } from './lib/lighthouse-runner.mjs';
+import { runLighthouseAudit, launchLighthouseChrome, closeLighthouseChrome } from './lib/lighthouse-runner.mjs';
 import { checkAsset, classifyAssetType } from './lib/asset-checker.mjs';
 import { agenticIssueFindings, collectAgenticSignals, installWebMcpCapture } from './lib/agentic-audit.mjs';
 import { collectScriptInventory, scriptAuditIssueFindings, buildCspSummary } from './lib/script-audit.mjs';
@@ -235,9 +235,9 @@ const origin = new URL(site).origin;
 const canonicalHost = new URL(site).host;
 statusMsg('◐', c.cyan, 'Launching headless browser...');
 const browser = await chromium.launch({ headless: true });
-const context = await browser.newContext();
+let context = await browser.newContext();
 await installWebMcpCapture(context);
-const page = await context.newPage();
+let page = await context.newPage();
 phaseDone('Browser ready', Date.now() - setupStart);
 
 phaseHeader('Phase 2: URL discovery', '🗺️');
@@ -271,6 +271,10 @@ statusMsg('⏱️', c.brightMagenta, `Estimated: ${c.bold}~${formatDuration(estT
 phaseDone('URL discovery', Date.now() - discoveryStart);
 phaseHeader('Phase 3: Page scanning', '🔍');
 const scanStart = Date.now();
+let lighthouseChrome = null;
+if (runLighthouse) {
+  lighthouseChrome = await launchLighthouseChrome();
+}
 const pageTimes = [];
 const queue = [...discoveredUrls];
 const seenPages = new Set();
@@ -288,6 +292,12 @@ while (queue.length && (!maxPages || seenPages.size < maxPages)) {
   const url = queue.shift();
   if (seenPages.has(url)) continue;
   seenPages.add(url);
+  if (seenPages.size > 1 && seenPages.size % 25 === 1) {
+    await context.close();
+    context = await browser.newContext();
+    await installWebMcpCapture(context);
+    page = await context.newPage();
+  }
   const pageStart = Date.now();
   const pageNum = seenPages.size;
   const avgMs = pageTimes.length > 0 ? pageTimes.reduce((a, b) => a + b, 0) / pageTimes.length : estPerPage;
@@ -460,7 +470,7 @@ while (queue.length && (!maxPages || seenPages.size < maxPages)) {
   if (runLighthouse) {
     progressLine(pageNum, totalPages, shortUrl, `${c.brightYellow}⚡ Lighthouse...${c.reset}`);
     try {
-      lighthouseRow = await runLighthouseAudit(url);
+      lighthouseRow = await runLighthouseAudit(url, { port: lighthouseChrome?.port });
       lighthouseRows.push(lighthouseRow);
     }
     catch (e) {
@@ -510,6 +520,7 @@ console.log('');
 phaseDone(`Scanned ${c.bold}${seenPages.size}${c.reset} pages`, Date.now() - scanStart);
 statusMsg('📊', c.brightCyan, `Total: ${severityColor(issueRows.length, 20)} issues, ${c.bold}${assetRows.length}${c.reset} assets checked`);
 
+await closeLighthouseChrome();
 await browser.close();
 
 const externalHosts = assetRows.filter((r) => r.asset_host && r.asset_host !== canonicalHost).map((r) => r.final_host || r.asset_host);

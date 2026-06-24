@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { chromium } from "playwright";
 import { stringify } from "csv-stringify/sync";
-import { runLighthouseAudit } from "./lib/lighthouse-runner.mjs";
+import { runLighthouseAudit, launchLighthouseChrome, closeLighthouseChrome } from "./lib/lighthouse-runner.mjs";
 import { agenticIssueFindings, collectAgenticSignals, installWebMcpCapture } from "./lib/agentic-audit.mjs";
 
 function parseArgs(argv) {
@@ -464,10 +464,12 @@ async function main() {
   const browser = await chromium.launch({ headless: true });
   const contextOptions = { userAgent: "Universal-SEO-Audit (Playwright)" };
   if (auth.httpCredentials) contextOptions.httpCredentials = auth.httpCredentials;
-  const context = await browser.newContext(contextOptions);
+  let context = await browser.newContext(contextOptions);
   await installWebMcpCapture(context);
-  const page = await context.newPage();
+  let page = await context.newPage();
   if (auth.formAuth) await maybePerformFormLogin(page, auth.formAuth, slowMode);
+
+  if (runLighthouse) await launchLighthouseChrome();
 
   const pageRows = [];
   const issueRows = [];
@@ -486,6 +488,12 @@ async function main() {
   const uniqueLinks = new Map();
 
   for (let i = 0; i < urls.length; i++) {
+    if (i > 0 && i % 25 === 0) {
+      await context.close();
+      context = await browser.newContext(contextOptions);
+      await installWebMcpCapture(context);
+      page = await context.newPage();
+    }
     const url = urls[i];
     const pageStart = Date.now();
     console.log(`[${i+1}/${urls.length}] Scanning: ${decodeUrlForDisplay(url)} | ETA remaining: ${estimateRemaining(completedDurations, i, urls.length)}`);
@@ -847,6 +855,7 @@ async function main() {
     }
   }
 
+  await closeLighthouseChrome();
   await browser.close();
 
   const issueCounts = issueRows.reduce((acc, row) => { acc[row.page_url] = (acc[row.page_url] || 0) + 1; return acc; }, {});
