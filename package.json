@@ -4,7 +4,7 @@
   "type": "module",
   "packageManager": "pnpm@10.8.0",
   "scripts": {
-    "audit": "node scripts/run-seo-audit.mjs"
+    "seo-audit": "node scripts/run-seo-audit.mjs"
   },
   "dependencies": {
     "chrome-launcher": "^1.1.2",

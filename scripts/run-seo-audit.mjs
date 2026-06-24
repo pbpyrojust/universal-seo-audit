@@ -86,6 +86,62 @@ function writeCsv(filePath, columns, rows) {
   for (const row of rows) lines.push(columns.map((c) => escapeCsv(row[c])).join(','));
   fs.writeFileSync(filePath, lines.join('\n') + '\n', 'utf8');
 }
+const c = {
+  reset: '\x1b[0m', bold: '\x1b[1m', dim: '\x1b[2m', italic: '\x1b[3m',
+  red: '\x1b[31m', green: '\x1b[32m', yellow: '\x1b[33m', blue: '\x1b[34m',
+  magenta: '\x1b[35m', cyan: '\x1b[36m', white: '\x1b[37m',
+  bgRed: '\x1b[41m', bgGreen: '\x1b[42m', bgYellow: '\x1b[43m', bgBlue: '\x1b[44m',
+  bgMagenta: '\x1b[45m', bgCyan: '\x1b[46m',
+  brightRed: '\x1b[91m', brightGreen: '\x1b[92m', brightYellow: '\x1b[93m',
+  brightBlue: '\x1b[94m', brightMagenta: '\x1b[95m', brightCyan: '\x1b[96m'
+};
+const rainbowColors = [c.brightRed, c.brightYellow, c.brightGreen, c.brightCyan, c.brightBlue, c.brightMagenta];
+function rainbow(text) {
+  return [...text].map((ch, i) => ch === ' ' ? ch : `${rainbowColors[i % rainbowColors.length]}${ch}`).join('') + c.reset;
+}
+function rainbowBar(filled, empty, width = 30) {
+  const chars = [];
+  for (let i = 0; i < filled; i++) {
+    chars.push(`${rainbowColors[i % rainbowColors.length]}${'█'}`);
+  }
+  return chars.join('') + `${c.dim}${'░'.repeat(empty)}${c.reset}`;
+}
+function formatDuration(ms) {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return rem > 0 ? `${m}m ${rem}s` : `${m}m`;
+}
+const spinnerFrames = ['◐', '◓', '◑', '◒'];
+let spinnerIdx = 0;
+function spinner() { return rainbowColors[spinnerIdx % rainbowColors.length] + spinnerFrames[spinnerIdx++ % spinnerFrames.length] + c.reset; }
+function progressLine(current, total, label, extra = '') {
+  const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+  const barWidth = 30;
+  const filled = total > 0 ? Math.round((current / total) * barWidth) : 0;
+  const bar = rainbowBar(filled, barWidth - filled, barWidth);
+  const pctStr = pct === 100 ? `${c.brightGreen}${pct}%${c.reset}` : `${c.brightCyan}${pct}%${c.reset}`;
+  const spin = current < total ? spinner() : `${c.brightGreen}✔${c.reset}`;
+  process.stdout.write(`\r  ${spin} ${bar} ${c.bold}${current}${c.reset}${c.dim}/${total}${c.reset} ${pctStr} ${c.dim}${label}${c.reset}${extra ? ' ' + extra : ''}`.padEnd(160) + '\r');
+}
+function phaseHeader(label, icon = '▸') {
+  console.log('');
+  console.log(`  ${rainbow(icon)} ${c.bold}${c.brightCyan}${label}${c.reset} ${c.dim}${'─'.repeat(Math.max(0, 52 - label.length))}${c.reset}`);
+}
+function phaseDone(label, elapsed) {
+  console.log(`    ${c.brightGreen}✔${c.reset} ${label} ${c.dim}in${c.reset} ${c.brightYellow}${formatDuration(elapsed)}${c.reset}`);
+}
+function statusMsg(icon, color, msg) {
+  console.log(`    ${color}${icon}${c.reset} ${msg}`);
+}
+function severityColor(count, threshold = 0) {
+  if (count === 0) return `${c.brightGreen}${count}${c.reset}`;
+  if (count > threshold) return `${c.brightRed}${count}${c.reset}`;
+  return `${c.brightYellow}${count}${c.reset}`;
+}
+
 function extractCssUrls(cssText, baseUrl) {
   const urls = [];
   const re = /url\((.*?)\)/gim;
@@ -162,34 +218,60 @@ const runLighthouse = Boolean(args['lighthouse']);
 const outDir = path.resolve('reports/' + runId(site));
 fs.mkdirSync(outDir, { recursive: true });
 
-console.log('Running audit on:', site);
+const auditStartTime = Date.now();
+console.log('');
+console.log(`  ${rainbow('╔══════════════════════════════════════════════════════════╗')}`);
+console.log(`  ${rainbow('║')}  ${c.bold}${c.brightCyan}⚡ Universal SEO Audit${c.reset}                                ${rainbow('║')}`);
+console.log(`  ${rainbow('║')}  ${c.dim}Technical SEO · Assets · Scripts · CSP · Agentic${c.reset}       ${rainbow('║')}`);
+console.log(`  ${rainbow('╚══════════════════════════════════════════════════════════╝')}`);
+console.log('');
+console.log(`  ${c.brightMagenta}🎯${c.reset} ${c.bold}Target:${c.reset}     ${c.brightCyan}${site}${c.reset}`);
+console.log(`  ${c.brightMagenta}📁${c.reset} ${c.bold}Output:${c.reset}     ${c.dim}${outDir}${c.reset}`);
+console.log(`  ${c.brightMagenta}🔬${c.reset} ${c.bold}Lighthouse:${c.reset} ${runLighthouse ? `${c.brightGreen}enabled${c.reset}` : `${c.dim}disabled${c.reset}`}`);
+
+phaseHeader('Phase 1: Setup', '🚀');
+const setupStart = Date.now();
 const origin = new URL(site).origin;
 const canonicalHost = new URL(site).host;
+statusMsg('◐', c.cyan, 'Launching headless browser...');
 const browser = await chromium.launch({ headless: true });
 const context = await browser.newContext();
 await installWebMcpCapture(context);
 const page = await context.newPage();
+phaseDone('Browser ready', Date.now() - setupStart);
 
+phaseHeader('Phase 2: URL discovery', '🗺️');
+const discoveryStart = Date.now();
 let discoveredUrls = [];
 if (args['urls-file']) {
   discoveredUrls = fs.readFileSync(path.resolve(args['urls-file']), 'utf8').split(/\r?\n/g).map((s) => s.trim()).filter(Boolean).map(normalizeUrl);
   if (maxPages) discoveredUrls = discoveredUrls.slice(0, maxPages);
-  console.log(`Using URL file: ${args['urls-file']} (${discoveredUrls.length} URL(s))`);
+  statusMsg('📄', c.cyan, `URL file: ${c.bold}${args['urls-file']}${c.reset} ${c.dim}(${discoveredUrls.length} URLs)${c.reset}`);
 } else if (!args['crawl']) {
   try {
+    statusMsg('◐', c.cyan, 'Fetching sitemap...');
     discoveredUrls = await discoverUrlsFromSitemap(site, args);
-    console.log(`Discovered ${discoveredUrls.length} URL(s) from sitemap.`);
+    statusMsg('🌐', c.brightGreen, `Found ${c.bold}${discoveredUrls.length}${c.reset} URL(s) from sitemap`);
     fs.writeFileSync(path.join(outDir, 'urls.txt'), discoveredUrls.join('\n') + '\n', 'utf8');
   } catch (e) {
-    console.warn('Warning: sitemap discovery failed. Falling back to browser crawl.');
+    statusMsg('⚠', c.brightYellow, 'Sitemap discovery failed. Falling back to browser crawl.');
     discoveredUrls = [normalizeUrl(site)];
   }
 } else {
   discoveredUrls = [normalizeUrl(site)];
+  statusMsg('🕷️', c.cyan, 'Browser crawl mode');
 }
 if (runLighthouse && discoveredUrls.length > 50 && !maxPages) {
-  console.warn(`Warning: Lighthouse is enabled for ${discoveredUrls.length} URL(s). This can take a very long time. Use --max-pages 10 for a smaller Lighthouse sample.`);
+  statusMsg('⚠', c.brightYellow, `Lighthouse enabled for ${c.bold}${discoveredUrls.length}${c.reset}${c.brightYellow} URLs — this will take a while. Use --max-pages 10 for a sample.${c.reset}`);
 }
+const totalPages = maxPages ? Math.min(maxPages, discoveredUrls.length) : discoveredUrls.length;
+const estPerPage = runLighthouse ? 25000 : 8000;
+const estTotal = totalPages * estPerPage;
+statusMsg('⏱️', c.brightMagenta, `Estimated: ${c.bold}~${formatDuration(estTotal)}${c.reset} ${c.dim}(${totalPages} pages${runLighthouse ? ' + Lighthouse' : ''})${c.reset}`);
+phaseDone('URL discovery', Date.now() - discoveryStart);
+phaseHeader('Phase 3: Page scanning', '🔍');
+const scanStart = Date.now();
+const pageTimes = [];
 const queue = [...discoveredUrls];
 const seenPages = new Set();
 const seenAssets = new Set();
@@ -206,8 +288,13 @@ while (queue.length && (!maxPages || seenPages.size < maxPages)) {
   const url = queue.shift();
   if (seenPages.has(url)) continue;
   seenPages.add(url);
-
-  console.log('Scanning page:', url);
+  const pageStart = Date.now();
+  const pageNum = seenPages.size;
+  const avgMs = pageTimes.length > 0 ? pageTimes.reduce((a, b) => a + b, 0) / pageTimes.length : estPerPage;
+  const remaining = totalPages - pageNum;
+  const eta = remaining > 0 ? formatDuration(remaining * avgMs) : '0s';
+  const shortUrl = url.length > 55 ? url.slice(0, 52) + '...' : url;
+  progressLine(pageNum, totalPages, shortUrl, `${c.dim}ETA:${c.reset} ${c.brightYellow}~${eta}${c.reset}`);
   let status = 0;
   try {
     const res = await page.goto(url, { waitUntil: 'networkidle', timeout: 90000 });
@@ -371,7 +458,7 @@ while (queue.length && (!maxPages || seenPages.size < maxPages)) {
 
   let lighthouseRow = null;
   if (runLighthouse) {
-    console.log('Running Lighthouse:', url);
+    progressLine(pageNum, totalPages, shortUrl, `${c.brightYellow}⚡ Lighthouse...${c.reset}`);
     try {
       lighthouseRow = await runLighthouseAudit(url);
       lighthouseRows.push(lighthouseRow);
@@ -410,7 +497,18 @@ while (queue.length && (!maxPages || seenPages.size < maxPages)) {
   } catch (e) {
     scriptRows.push({ page_url: url, total_script_count: 0, note: `Script audit failed: ${String(e?.message || e)}` });
   }
+
+  const pageElapsed = Date.now() - pageStart;
+  pageTimes.push(pageElapsed);
+  const issuesOnPage = issueRows.filter((i) => i.page_url === url).length;
+  const assetsOnPage = assetRows.length - pageAssetStart;
+  const issueIcon = issuesOnPage === 0 ? `${c.brightGreen}✔${c.reset}` : issuesOnPage > 5 ? `${c.brightRed}✖${c.reset}` : `${c.brightYellow}●${c.reset}`;
+  console.log(`  ${issueIcon} ${c.dim}[${pageNum}/${totalPages}]${c.reset} ${c.brightCyan}${formatDuration(pageElapsed)}${c.reset} ${c.dim}│${c.reset} ${c.white}${assetsOnPage}${c.reset} assets ${c.dim}│${c.reset} ${severityColor(issuesOnPage, 5)} issues ${c.dim}│${c.reset} ${c.dim}${shortUrl}${c.reset}`);
 }
+
+console.log('');
+phaseDone(`Scanned ${c.bold}${seenPages.size}${c.reset} pages`, Date.now() - scanStart);
+statusMsg('📊', c.brightCyan, `Total: ${severityColor(issueRows.length, 20)} issues, ${c.bold}${assetRows.length}${c.reset} assets checked`);
 
 await browser.close();
 
@@ -420,6 +518,9 @@ if (uniqueExternalHosts.length > 1) {
   issueRows.push({ page_url: site, issue_type: 'cdn_inconsistency', severity: 'medium', details: `Multiple external asset hosts detected: ${uniqueExternalHosts.join(' | ')}` });
 }
 
+phaseHeader('Phase 4: Report generation', '📝');
+const reportStart = Date.now();
+statusMsg('💾', c.cyan, 'Writing CSV data files...');
 writeCsv(path.join(outDir, 'seo-pages.csv'), ['page_url','title','status_code','canonical','canonical_count','canonical_status','hreflang_present','hreflang_count','hreflang_invalid_count','hreflang_duplicate_count','hreflang_has_x_default','hreflang_values','asset_count','section'], pageRows);
 writeCsv(path.join(outDir, 'seo-assets.csv'), ['page_url','asset_url','asset_type','source','status_code','final_url','asset_host','final_host','ok','broken','host_mismatch','www_mismatch','non_canonical_host','staging_production_mixup','protocol_mismatch','content_type'], assetRows);
 writeCsv(path.join(outDir, 'seo-issues.csv'), ['page_url','issue_type','severity','details'], issueRows);
@@ -431,11 +532,30 @@ writeCsv(path.join(outDir, 'seo-scripts.csv'), ['page_url','external_script_coun
 const cspSummary = buildCspSummary(scriptRows, origin);
 writeCsv(path.join(outDir, 'seo-csp-summary.csv'), ['pages_audited','total_external_scripts','total_inline_scripts','total_inline_event_handlers','total_javascript_links','total_render_blocking','unique_third_party_domains','third_party_domains','needs_unsafe_inline','needs_unsafe_eval','pages_with_eval','pages_with_document_write','suggested_script_src'], [cspSummary]);
 if (!args['no-visual-report']) {
-  console.log('Generating visual dashboard and PDF report...');
+  statusMsg('🎨', c.cyan, 'Generating visual dashboard and PDF report...');
   const visualArgs = [path.resolve('scripts/generate-visual-report.mjs'), '--run-dir', outDir, '--site', site];
   if (args['brand-config']) visualArgs.push('--brand-config', args['brand-config']);
   const visual = spawnSync(process.execPath, visualArgs, { stdio: 'inherit' });
-  if (visual.status !== 0) console.warn('Warning: visual report generation failed.');
+  if (visual.status !== 0) statusMsg('⚠', c.brightYellow, 'Visual report generation failed.');
 }
+phaseDone('Reports written', Date.now() - reportStart);
 
-console.log('Done:', outDir);
+const totalElapsed = Date.now() - auditStartTime;
+const totalScripts = scriptRows.reduce((a, r) => a + (r.total_script_count || 0), 0);
+const extScripts = scriptRows.reduce((a, r) => a + (r.external_script_count || 0), 0);
+const inlScripts = scriptRows.reduce((a, r) => a + (r.inline_script_count || 0), 0);
+console.log('');
+console.log(`  ${rainbow('╔══════════════════════════════════════════════════════════╗')}`);
+console.log(`  ${rainbow('║')}  ${c.bold}${c.brightGreen}✨ Audit Complete!${c.reset}                                    ${rainbow('║')}`);
+console.log(`  ${rainbow('╚══════════════════════════════════════════════════════════╝')}`);
+console.log('');
+console.log(`  ${c.brightCyan}🎯${c.reset} ${c.bold}Site${c.reset}        ${site}`);
+console.log(`  ${c.brightCyan}📄${c.reset} ${c.bold}Pages${c.reset}       ${c.brightGreen}${seenPages.size}${c.reset}`);
+console.log(`  ${c.brightCyan}🔗${c.reset} ${c.bold}Assets${c.reset}      ${c.brightGreen}${assetRows.length}${c.reset}`);
+console.log(`  ${c.brightCyan}⚠️${c.reset}  ${c.bold}Issues${c.reset}      ${severityColor(issueRows.length, 20)}`);
+console.log(`  ${c.brightCyan}📜${c.reset} ${c.bold}Scripts${c.reset}     ${c.brightGreen}${totalScripts}${c.reset} ${c.dim}(${extScripts} external, ${inlScripts} inline)${c.reset}`);
+console.log(`  ${c.brightCyan}⏱️${c.reset}  ${c.bold}Time${c.reset}        ${c.brightYellow}${formatDuration(totalElapsed)}${c.reset}`);
+console.log(`  ${c.brightCyan}📁${c.reset} ${c.bold}Output${c.reset}      ${c.dim}${outDir}${c.reset}`);
+console.log('');
+console.log(`  ${rainbow('★ ★ ★')} ${c.dim}Happy auditing!${c.reset} ${rainbow('★ ★ ★')}`);
+console.log('');
