@@ -36,6 +36,7 @@ function normalizeUrl(u) {
     return url.toString();
   } catch { return String(u || '').trim(); }
 }
+function normalizeWhitespace(s) { return String(s || '').replace(/\s+/g, ' ').trim(); }
 function sameOrigin(a, b) {
   try { return new URL(a).origin === new URL(b).origin; } catch { return false; }
 }
@@ -43,10 +44,10 @@ function canonicalStatus(pageUrl, canonicalUrl, count) {
   if (!canonicalUrl) return 'missing';
   if (Number(count || 0) > 1) return 'multiple';
   try {
-    const page = new URL(normalizeUrl(pageUrl));
-    const canonical = new URL(normalizeUrl(canonicalUrl));
-    if (page.origin !== canonical.origin) return 'cross_domain';
-    if (page.toString() === canonical.toString()) return 'self_referencing';
+    const p = new URL(normalizeUrl(pageUrl));
+    const can = new URL(normalizeUrl(canonicalUrl));
+    if (p.origin !== can.origin) return 'cross_domain';
+    if (p.toString() === can.toString()) return 'self_referencing';
     return 'mismatch';
   } catch {
     return 'invalid';
@@ -76,6 +77,22 @@ function getSection(urlStr) {
     return seg || 'root';
   } catch { return 'unknown'; }
 }
+function looksLikeFilename(s) {
+  const v = (s || '').toLowerCase();
+  if (!v) return false;
+  if (/(\.png|\.jpg|\.jpeg|\.gif|\.webp|\.svg)$/i.test(v)) return true;
+  if (/^(img|dsc|pxl|image)[-_\s]?\d+/.test(v)) return true;
+  return /[_-]/.test(v) && !/\s/.test(v) && /[a-z]/.test(v) && v.length >= 8;
+}
+function tokenSet(text) {
+  return new Set(String(text || '').toLowerCase().split(/\s+/).filter((w) => w.length > 2));
+}
+function jaccardSimilarity(a, b) {
+  if (!a.size || !b.size) return 0;
+  let intersection = 0;
+  for (const w of a) if (b.has(w)) intersection++;
+  return intersection / (a.size + b.size - intersection);
+}
 function escapeCsv(value) {
   const s = String(value ?? '');
   if (/[",\n\r]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
@@ -83,9 +100,21 @@ function escapeCsv(value) {
 }
 function writeCsv(filePath, columns, rows) {
   const lines = [columns.join(',')];
-  for (const row of rows) lines.push(columns.map((c) => escapeCsv(row[c])).join(','));
+  for (const row of rows) lines.push(columns.map((col) => escapeCsv(row[col])).join(','));
   fs.writeFileSync(filePath, lines.join('\n') + '\n', 'utf8');
 }
+async function checkLink(url) {
+  const headers = { 'user-agent': 'Universal-SEO-Audit Link Checker' };
+  try {
+    let res = await fetch(url, { method: 'HEAD', redirect: 'follow', headers });
+    if (res.status === 405 || res.status === 501) res = await fetch(url, { method: 'GET', redirect: 'follow', headers });
+    return { status: res.status, ok: res.ok };
+  } catch (e) {
+    return { status: 0, ok: false, error: String(e?.message || e) };
+  }
+}
+
+// ── Terminal UI helpers ────────────────────────────────────────────────
 const c = {
   reset: '\x1b[0m', bold: '\x1b[1m', dim: '\x1b[2m', italic: '\x1b[3m',
   red: '\x1b[31m', green: '\x1b[32m', yellow: '\x1b[33m', blue: '\x1b[34m',
@@ -142,6 +171,7 @@ function severityColor(count, threshold = 0) {
   return `${c.brightYellow}${count}${c.reset}`;
 }
 
+// ── Asset / sitemap helpers ────────────────────────────────────────────
 function extractCssUrls(cssText, baseUrl) {
   const urls = [];
   const re = /url\((.*?)\)/gim;
@@ -180,10 +210,10 @@ async function discoverUrlsFromSitemap(site, args) {
   const candidates = [args['sitemap-url'], `${base}/sitemap_index.xml`, `${base}/wp-sitemap.xml`, `${base}/sitemap.xml`].filter(Boolean);
   let sitemapUrl = null;
   let xml = null;
-  for (const c of candidates) {
+  for (const cand of candidates) {
     try {
-      xml = await fetchText(c);
-      sitemapUrl = c;
+      xml = await fetchText(cand);
+      sitemapUrl = cand;
       break;
     } catch {}
   }
@@ -207,6 +237,136 @@ async function discoverUrlsFromSitemap(site, args) {
   return urls;
 }
 
+// ── Full-page SEO extraction (runs inside page.evaluate) ───────────────
+async function extractFullPageData(page) {
+  return await page.evaluate(() => {
+    // Assets
+    const assets = [];
+    const push = (url, tagName, rel = '', source = '') => { if (url) assets.push({ url, tagName, rel, source }); };
+    document.querySelectorAll('img[src]').forEach((el) => push(el.currentSrc || el.src || el.getAttribute('src'), 'img', '', 'img'));
+    document.querySelectorAll('script[src]').forEach((el) => push(el.src || el.getAttribute('src'), 'script', '', 'script'));
+    document.querySelectorAll('link[href]').forEach((el) => push(el.href || el.getAttribute('href'), 'link', el.getAttribute('rel') || '', 'link'));
+    document.querySelectorAll('source[src]').forEach((el) => push(el.src || el.getAttribute('src'), 'source', '', 'source'));
+    document.querySelectorAll('video[src], audio[src]').forEach((el) => push(el.src || el.getAttribute('src'), el.tagName.toLowerCase(), '', el.tagName.toLowerCase()));
+    document.querySelectorAll('[style]').forEach((el) => push(el.getAttribute('style') || '', 'style', '', 'inline-style'));
+    document.querySelectorAll('style').forEach((el) => push(el.textContent || '', 'style', '', 'style-tag'));
+
+    // Links with anchor text
+    const links = Array.from(document.querySelectorAll('a[href]')).map((a) => ({
+      href: a.href || a.getAttribute('href') || '',
+      text: (a.textContent || '').trim()
+    }));
+
+    // Canonicals & hreflangs
+    const canonicals = Array.from(document.querySelectorAll('link[rel="canonical" i]')).map((el) => el.href || el.getAttribute('href') || '').filter(Boolean);
+    const hreflangs = Array.from(document.querySelectorAll('link[rel="alternate" i][hreflang]')).map((el) => ({
+      hreflang: el.getAttribute('hreflang') || '',
+      href: el.href || el.getAttribute('href') || ''
+    }));
+
+    // Core SEO metadata
+    const title = document.title || '';
+    const desc = document.querySelector('meta[name="description" i]')?.getAttribute('content') || '';
+    const robotsMeta = document.querySelector('meta[name="robots" i]')?.getAttribute('content') || '';
+    const viewportMeta = document.querySelector('meta[name="viewport" i]')?.getAttribute('content') || '';
+    const htmlLang = document.documentElement?.getAttribute('lang') || '';
+
+    // Open Graph
+    const ogTitle = document.querySelector('meta[property="og:title" i]')?.getAttribute('content') || '';
+    const ogDescription = document.querySelector('meta[property="og:description" i]')?.getAttribute('content') || '';
+    const ogImage = document.querySelector('meta[property="og:image" i]')?.getAttribute('content') || '';
+    const ogUrl = document.querySelector('meta[property="og:url" i]')?.getAttribute('content') || '';
+
+    // Twitter Card
+    const twitterCard = document.querySelector('meta[name="twitter:card" i]')?.getAttribute('content') || '';
+    const twitterTitle = document.querySelector('meta[name="twitter:title" i]')?.getAttribute('content') || '';
+    const twitterDescription = document.querySelector('meta[name="twitter:description" i]')?.getAttribute('content') || '';
+    const twitterImage = document.querySelector('meta[name="twitter:image" i]')?.getAttribute('content') || '';
+
+    // Headings
+    const h1s = Array.from(document.querySelectorAll('h1')).map((n) => n.textContent?.trim() || '');
+    const headings = Array.from(document.querySelectorAll('h1,h2,h3')).map((n) => ({
+      tag: n.tagName.toLowerCase(),
+      text: (n.textContent || '').trim()
+    })).slice(0, 20);
+
+    // Body text
+    const bodyText = (document.body?.innerText || '').replace(/\s+/g, ' ').trim();
+    const wordCount = bodyText ? bodyText.split(/\s+/).filter(Boolean).length : 0;
+
+    // Images with alt text
+    const images = Array.from(document.images).map((img) => ({
+      src: img.currentSrc || img.getAttribute('src') || '',
+      alt: img.getAttribute('alt') || '',
+      title: img.getAttribute('title') || ''
+    }));
+
+    // JSON-LD / Structured data
+    const jsonLdScripts = Array.from(document.querySelectorAll('script[type="application/ld+json"]')).map((n) => n.textContent || '');
+    let jsonLdValidCount = 0;
+    let jsonLdInvalidCount = 0;
+    const schemaTypes = [];
+    for (const raw of jsonLdScripts) {
+      try {
+        const parsed = JSON.parse(raw);
+        jsonLdValidCount++;
+        const items = Array.isArray(parsed) ? parsed : [parsed];
+        for (const item of items) {
+          if (item && typeof item === 'object') {
+            const t = item['@type'];
+            if (Array.isArray(t)) schemaTypes.push(...t.map(String));
+            else if (t) schemaTypes.push(String(t));
+            if (Array.isArray(item['@graph'])) {
+              for (const node of item['@graph']) {
+                const gt = node?.['@type'];
+                if (Array.isArray(gt)) schemaTypes.push(...gt.map(String));
+                else if (gt) schemaTypes.push(String(gt));
+              }
+            }
+          }
+        }
+      } catch {
+        jsonLdInvalidCount++;
+      }
+    }
+
+    // DOM stats
+    const domNodeCount = document.querySelectorAll('*').length;
+    const scriptTagCount = document.querySelectorAll('script').length;
+    const stylesheetCount = document.querySelectorAll('link[rel="stylesheet"]').length;
+    const resourceCount = (performance.getEntriesByType('resource') || []).length;
+
+    return {
+      assets, links, canonicals, hreflangs,
+      title, title_length: title.length,
+      meta_description: desc, meta_description_length: desc.length,
+      robots_meta: robotsMeta,
+      robots_indexable: !/noindex/i.test(robotsMeta),
+      robots_followable: !/nofollow/i.test(robotsMeta),
+      viewport_meta: viewportMeta,
+      html_lang: htmlLang,
+      og_title: ogTitle, og_description: ogDescription, og_image: ogImage, og_url: ogUrl,
+      twitter_card: twitterCard, twitter_title: twitterTitle, twitter_description: twitterDescription, twitter_image: twitterImage,
+      h1_count: h1s.length, h1_text: h1s.join(' | '),
+      heading_outline: headings.map((h) => `${h.tag}:${h.text}`).join(' | '),
+      word_count: wordCount,
+      body_excerpt: bodyText.slice(0, 4000),
+      images,
+      jsonld_count: jsonLdScripts.length,
+      jsonld_valid_count: jsonLdValidCount,
+      jsonld_invalid_count: jsonLdInvalidCount,
+      schema_types: Array.from(new Set(schemaTypes.filter(Boolean))).join(' | '),
+      dom_node_count: domNodeCount,
+      script_tag_count: scriptTagCount,
+      stylesheet_count: stylesheetCount,
+      resource_count: resourceCount,
+    };
+  });
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Main
+// ════════════════════════════════════════════════════════════════════════
 const args = parseArgs(process.argv);
 if (!args.site) {
   console.error('Missing --site');
@@ -215,6 +375,7 @@ if (!args.site) {
 const site = args.site;
 const maxPages = args['max-pages'] ? Number(args['max-pages']) : null;
 const runLighthouse = Boolean(args['lighthouse']);
+const maxLinkChecks = args['max-link-checks'] ? Number(args['max-link-checks']) : 250;
 const outDir = path.resolve('reports/' + runId(site));
 fs.mkdirSync(outDir, { recursive: true });
 
@@ -269,6 +430,8 @@ const estPerPage = runLighthouse ? 25000 : 8000;
 const estTotal = totalPages * estPerPage;
 statusMsg('⏱️', c.brightMagenta, `Estimated: ${c.bold}~${formatDuration(estTotal)}${c.reset} ${c.dim}(${totalPages} pages${runLighthouse ? ' + Lighthouse' : ''})${c.reset}`);
 phaseDone('URL discovery', Date.now() - discoveryStart);
+
+// ── Phase 3: Page scanning ─────────────────────────────────────────────
 phaseHeader('Phase 3: Page scanning', '🔍');
 const scanStart = Date.now();
 let lighthouseChrome = null;
@@ -282,11 +445,19 @@ const seenAssets = new Set();
 const pageRows = [];
 const assetRows = [];
 const issueRows = [];
+const imageRows = [];
+const socialRows = [];
+const structuredRows = [];
 const lighthouseRows = [];
 const agenticRows = [];
 const scriptRows = [];
+const crawlRows = [];
 const sectionMap = new Map();
 const hostMap = new Map();
+const titleMap = new Map();
+const descMap = new Map();
+const pageLinksMap = new Map();
+const uniqueLinks = new Map();
 
 while (queue.length && (!maxPages || seenPages.size < maxPages)) {
   const url = queue.shift();
@@ -306,77 +477,58 @@ while (queue.length && (!maxPages || seenPages.size < maxPages)) {
   const shortUrl = url.length > 55 ? url.slice(0, 52) + '...' : url;
   progressLine(pageNum, totalPages, shortUrl, `${c.dim}ETA:${c.reset} ${c.brightYellow}~${eta}${c.reset}`);
   let status = 0;
+  let responseHeaders = {};
   try {
     const res = await page.goto(url, { waitUntil: 'networkidle', timeout: 90000 });
     status = res?.status?.() || 0;
+    responseHeaders = res?.headers?.() || {};
   } catch {
     status = 0;
   }
 
   let data;
   try {
-    data = await page.evaluate(() => {
-      const assets = [];
-      const push = (url, tagName, rel = '', source = '') => { if (url) assets.push({ url, tagName, rel, source }); };
-      document.querySelectorAll('img[src]').forEach((el) => push(el.currentSrc || el.src || el.getAttribute('src'), 'img', '', 'img'));
-      document.querySelectorAll('script[src]').forEach((el) => push(el.src || el.getAttribute('src'), 'script', '', 'script'));
-      document.querySelectorAll('link[href]').forEach((el) => push(el.href || el.getAttribute('href'), 'link', el.getAttribute('rel') || '', 'link'));
-      document.querySelectorAll('source[src]').forEach((el) => push(el.src || el.getAttribute('src'), 'source', '', 'source'));
-      document.querySelectorAll('video[src], audio[src]').forEach((el) => push(el.src || el.getAttribute('src'), el.tagName.toLowerCase(), '', el.tagName.toLowerCase()));
-      document.querySelectorAll('[style]').forEach((el) => push(el.getAttribute('style') || '', 'style', '', 'inline-style'));
-      document.querySelectorAll('style').forEach((el) => push(el.textContent || '', 'style', '', 'style-tag'));
-      const links = Array.from(document.querySelectorAll('a[href]')).map((a) => a.href || a.getAttribute('href')).filter(Boolean);
-      const canonicals = Array.from(document.querySelectorAll('link[rel="canonical" i]')).map((el) => el.href || el.getAttribute('href') || '').filter(Boolean);
-      const hreflangs = Array.from(document.querySelectorAll('link[rel="alternate" i][hreflang]')).map((el) => ({
-        hreflang: el.getAttribute('hreflang') || '',
-        href: el.href || el.getAttribute('href') || ''
-      }));
-      return { title: document.title || '', assets, links, canonicals, hreflangs };
-    });
+    data = await extractFullPageData(page);
   } catch (evaluateError) {
     console.warn(`Warning: DOM extraction failed for ${url}. Retrying after reload. ${evaluateError?.message || evaluateError}`);
     try {
       const retryRes = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 90000 });
       status = retryRes?.status?.() || status;
+      responseHeaders = retryRes?.headers?.() || responseHeaders;
       await page.waitForTimeout(750);
-      data = await page.evaluate(() => {
-        const assets = [];
-        const push = (url, tagName, rel = '', source = '') => { if (url) assets.push({ url, tagName, rel, source }); };
-        document.querySelectorAll('img[src]').forEach((el) => push(el.currentSrc || el.src || el.getAttribute('src'), 'img', '', 'img'));
-        document.querySelectorAll('script[src]').forEach((el) => push(el.src || el.getAttribute('src'), 'script', '', 'script'));
-        document.querySelectorAll('link[href]').forEach((el) => push(el.href || el.getAttribute('href'), 'link', el.getAttribute('rel') || '', 'link'));
-        document.querySelectorAll('source[src]').forEach((el) => push(el.src || el.getAttribute('src'), 'source', '', 'source'));
-        document.querySelectorAll('video[src], audio[src]').forEach((el) => push(el.src || el.getAttribute('src'), el.tagName.toLowerCase(), '', el.tagName.toLowerCase()));
-        document.querySelectorAll('[style]').forEach((el) => push(el.getAttribute('style') || '', 'style', '', 'inline-style'));
-        document.querySelectorAll('style').forEach((el) => push(el.textContent || '', 'style', '', 'style-tag'));
-        const links = Array.from(document.querySelectorAll('a[href]')).map((a) => a.href || a.getAttribute('href')).filter(Boolean);
-        const canonicals = Array.from(document.querySelectorAll('link[rel="canonical" i]')).map((el) => el.href || el.getAttribute('href') || '').filter(Boolean);
-        const hreflangs = Array.from(document.querySelectorAll('link[rel="alternate" i][hreflang]')).map((el) => ({
-          hreflang: el.getAttribute('hreflang') || '',
-          href: el.href || el.getAttribute('href') || ''
-        }));
-        return { title: document.title || '', assets, links, canonicals, hreflangs };
-      });
+      data = await extractFullPageData(page);
     } catch (retryError) {
       console.warn(`Warning: Skipping DOM extraction for ${url}. ${retryError?.message || retryError}`);
-      issueRows.push({
-        page_url: url,
-        issue_type: 'page_extraction_error',
-        severity: 'high',
-        details: retryError?.message || String(retryError)
-      });
-      pageRows.push({ page_url: url, title: '', status_code: status, asset_count: 0, section: getSection(url), canonical_count: 0, canonical: '', hreflang_count: 0, hreflangs: '' });
+      issueRows.push({ page_url: url, issue_type: 'page_extraction_error', severity: 'high', details: retryError?.message || String(retryError) });
+      pageRows.push({ page_url: url, title: '', status_code: status, asset_count: 0, section: getSection(url), canonical_count: 0, canonical: '', canonical_status: '', meta_description: '', h1_count: 0, h1_text: '', word_count: 0, heading_outline: '', internal_link_count: 0, external_link_count: 0, image_count: 0, hreflang_count: 0, jsonld_count: 0, dom_node_count: 0, resource_count: 0, issue_count: 0 });
+      pageTimes.push(Date.now() - pageStart);
       continue;
     }
   }
 
-  for (const href of data.links) {
+  const finalUrl = normalizeUrl(url);
+  const title = normalizeWhitespace(data.title);
+  const desc = normalizeWhitespace(data.meta_description);
+  const robotsMeta = normalizeWhitespace(data.robots_meta);
+  const xRobotsTag = responseHeaders['x-robots-tag'] || '';
+
+  // ── Crawl discovery ──────────────────────────────────────────────────
+  const linksForPage = [];
+  for (const l of data.links) {
     try {
-      const absolute = normalizeUrl(new URL(href, url).toString());
-      if (args['crawl'] && sameOrigin(absolute, origin) && !seenPages.has(absolute) && (!maxPages || queue.length + seenPages.size < maxPages)) queue.push(absolute);
+      const abs = normalizeUrl(new URL(l.href, url).toString());
+      if (/^(mailto:|tel:|javascript:)/i.test(abs)) continue;
+      const kind = sameOrigin(abs, origin) ? 'internal' : 'external';
+      linksForPage.push({ href: abs, kind, anchor_text: normalizeWhitespace(l.text) });
+      if (kind === 'internal' && args['crawl'] && !seenPages.has(abs) && (!maxPages || queue.length + seenPages.size < maxPages)) queue.push(abs);
+      if (!uniqueLinks.has(abs) && uniqueLinks.size < maxLinkChecks) uniqueLinks.set(abs, kind);
     } catch {}
   }
+  pageLinksMap.set(url, linksForPage);
+  const internalLinkCount = linksForPage.filter((l) => l.kind === 'internal').length;
+  const externalLinkCount = linksForPage.filter((l) => l.kind === 'external').length;
 
+  // ── Asset checking ───────────────────────────────────────────────────
   const pageAssetStart = assetRows.length;
   for (const asset of data.assets) {
     if (!asset.url) continue;
@@ -426,59 +578,214 @@ while (queue.length && (!maxPages || seenPages.size < maxPages)) {
     hostMap.set(hostKey, (hostMap.get(hostKey) || 0) + 1);
   }
 
+  // ── Canonical & hreflang ─────────────────────────────────────────────
   const section = getSection(url);
   const canonical = (data.canonicals && data.canonicals[0]) ? normalizeUrl(data.canonicals[0]) : '';
   const canonical_count = (data.canonicals || []).length;
-  const canonical_status = canonicalStatus(url, canonical, canonical_count);
+  const cStatus = canonicalStatus(url, canonical, canonical_count);
   const hreflang_count = (data.hreflangs || []).length;
   const hreflangValidation = validateHreflangs(data.hreflangs || []);
   const hreflang_values = (data.hreflangs || []).map((h) => `${h.hreflang}:${h.href}`).join(' | ');
 
   if (!canonical) issueRows.push({ page_url: url, issue_type: 'canonical_missing', severity: 'medium', details: 'Missing canonical tag.' });
   if (canonical_count > 1) issueRows.push({ page_url: url, issue_type: 'canonical_duplicate', severity: 'high', details: `Found ${canonical_count} canonical tags: ${(data.canonicals || []).join(' | ')}` });
-  if (canonical_status === 'cross_domain') issueRows.push({ page_url: url, issue_type: 'canonical_cross_domain', severity: 'high', details: `Canonical points to another domain: ${canonical}` });
-  if (canonical_status === 'mismatch') issueRows.push({ page_url: url, issue_type: 'canonical_mismatch', severity: 'medium', details: `Canonical does not match crawled URL: ${canonical}` });
-  if (canonical_status === 'invalid') issueRows.push({ page_url: url, issue_type: 'canonical_invalid', severity: 'high', details: `Canonical URL could not be parsed: ${canonical}` });
+  if (cStatus === 'cross_domain') issueRows.push({ page_url: url, issue_type: 'canonical_cross_domain', severity: 'high', details: `Canonical points to another domain: ${canonical}` });
+  if (cStatus === 'mismatch') issueRows.push({ page_url: url, issue_type: 'canonical_mismatch', severity: 'medium', details: `Canonical does not match crawled URL: ${canonical}` });
+  if (cStatus === 'invalid') issueRows.push({ page_url: url, issue_type: 'canonical_invalid', severity: 'high', details: `Canonical URL could not be parsed: ${canonical}` });
 
   if (hreflang_count === 0) issueRows.push({ page_url: url, issue_type: 'hreflang_missing', severity: 'low', details: 'No hreflang tags found. This is only an issue for multilingual or multi-region sites.' });
   if (hreflangValidation.invalid > 0) issueRows.push({ page_url: url, issue_type: 'hreflang_invalid', severity: 'medium', details: `${hreflangValidation.invalid} hreflang tag(s) are missing hreflang or href values.` });
   if (hreflangValidation.duplicates > 0) issueRows.push({ page_url: url, issue_type: 'hreflang_duplicate', severity: 'medium', details: `${hreflangValidation.duplicates} duplicate hreflang value(s) found.` });
 
+  // ── HTTP status issues ───────────────────────────────────────────────
+  if (status >= 400 && status < 500) issueRows.push({ page_url: url, issue_type: 'http_4xx', severity: 'critical', details: `Page returned HTTP ${status}.` });
+  if (status >= 500) issueRows.push({ page_url: url, issue_type: 'http_5xx', severity: 'critical', details: `Page returned HTTP ${status}.` });
+  if (status >= 300 && status < 400) issueRows.push({ page_url: url, issue_type: 'redirect_page', severity: 'medium', details: `Page returned redirect status ${status}.` });
+
+  // ── Title checks ─────────────────────────────────────────────────────
+  if (!title) issueRows.push({ page_url: url, issue_type: 'missing_title', severity: 'high', details: 'Missing <title> tag.' });
+  else {
+    if (data.title_length > 60) issueRows.push({ page_url: url, issue_type: 'title_too_long', severity: 'medium', details: `Title length is ${data.title_length}.` });
+    if (data.title_length < 10) issueRows.push({ page_url: url, issue_type: 'title_too_short', severity: 'medium', details: `Title length is ${data.title_length}.` });
+  }
+  if (title) {
+    const key = title.toLowerCase();
+    if (!titleMap.has(key)) titleMap.set(key, new Set());
+    titleMap.get(key).add(url);
+  }
+
+  // ── Meta description checks ──────────────────────────────────────────
+  if (!desc) issueRows.push({ page_url: url, issue_type: 'missing_meta_description', severity: 'medium', details: 'Missing meta description.' });
+  else {
+    if (data.meta_description_length > 160) issueRows.push({ page_url: url, issue_type: 'meta_description_too_long', severity: 'low', details: `Meta description length is ${data.meta_description_length}.` });
+    if (data.meta_description_length < 50) issueRows.push({ page_url: url, issue_type: 'meta_description_too_short', severity: 'low', details: `Meta description length is ${data.meta_description_length}.` });
+  }
+  if (desc) {
+    const key = desc.toLowerCase();
+    if (!descMap.has(key)) descMap.set(key, new Set());
+    descMap.get(key).add(url);
+  }
+
+  // ── Robots / indexability ────────────────────────────────────────────
+  if (!data.robots_indexable) issueRows.push({ page_url: url, issue_type: 'noindex_present', severity: 'medium', details: `Robots meta contains noindex: ${robotsMeta || 'noindex'}.` });
+  if (!data.robots_followable) issueRows.push({ page_url: url, issue_type: 'nofollow_present', severity: 'low', details: `Robots meta contains nofollow: ${robotsMeta || 'nofollow'}.` });
+  if (/noindex/i.test(xRobotsTag)) issueRows.push({ page_url: url, issue_type: 'noindex_header', severity: 'medium', details: `X-Robots-Tag contains noindex: ${xRobotsTag}` });
+
+  // ── Viewport / lang / structured data ────────────────────────────────
+  if (!normalizeWhitespace(data.viewport_meta)) issueRows.push({ page_url: url, issue_type: 'missing_viewport', severity: 'medium', details: 'Missing viewport meta tag.' });
+  if (!normalizeWhitespace(data.html_lang)) issueRows.push({ page_url: url, issue_type: 'missing_lang', severity: 'medium', details: 'Missing html lang attribute.' });
+  if (Number(data.jsonld_invalid_count || 0) > 0) issueRows.push({ page_url: url, issue_type: 'invalid_jsonld', severity: 'medium', details: `${data.jsonld_invalid_count} JSON-LD block(s) could not be parsed.` });
+  if (Number(data.jsonld_count || 0) === 0) issueRows.push({ page_url: url, issue_type: 'missing_schema', severity: 'medium', details: 'No JSON-LD structured data found on this page.' });
+
+  // ── H1 checks ────────────────────────────────────────────────────────
+  if (Number(data.h1_count || 0) === 0) issueRows.push({ page_url: url, issue_type: 'h1_missing', severity: 'high', details: 'No H1 found on the page.' });
+  if (Number(data.h1_count || 0) > 1) issueRows.push({ page_url: url, issue_type: 'multiple_h1', severity: 'medium', details: `Found ${data.h1_count} H1 elements.` });
+
+  // ── Thin content ─────────────────────────────────────────────────────
+  if (Number(data.word_count || 0) > 0 && Number(data.word_count) < 150) issueRows.push({ page_url: url, issue_type: 'thin_content', severity: 'medium', details: `Word count is ${data.word_count}.` });
+
+  // ── DOM / resource weight ────────────────────────────────────────────
+  if (Number(data.dom_node_count || 0) > 1500) issueRows.push({ page_url: url, issue_type: 'heavy_dom', severity: 'low', details: `DOM node count is ${data.dom_node_count}.` });
+  if (Number(data.resource_count || 0) > 200) issueRows.push({ page_url: url, issue_type: 'high_resource_count', severity: 'low', details: `Resource count is ${data.resource_count}.` });
+
+  // ── Open Graph / Twitter card checks ─────────────────────────────────
+  if (!normalizeWhitespace(data.og_title)) issueRows.push({ page_url: url, issue_type: 'og_title_missing', severity: 'low', details: 'Missing og:title meta tag.' });
+  if (!normalizeWhitespace(data.og_description)) issueRows.push({ page_url: url, issue_type: 'og_description_missing', severity: 'low', details: 'Missing og:description meta tag.' });
+  if (!normalizeWhitespace(data.og_image)) issueRows.push({ page_url: url, issue_type: 'og_image_missing', severity: 'medium', details: 'Missing og:image meta tag.' });
+  if (normalizeWhitespace(data.og_image) && String(data.og_image).startsWith('http://')) issueRows.push({ page_url: url, issue_type: 'og_image_http', severity: 'medium', details: 'og:image uses HTTP instead of HTTPS.' });
+  if (normalizeWhitespace(data.og_url)) {
+    try {
+      if (normalizeUrl(data.og_url) !== normalizeUrl(url)) issueRows.push({ page_url: url, issue_type: 'og_url_mismatch', severity: 'low', details: `og:url does not match page URL: ${data.og_url}` });
+    } catch {}
+  }
+  if (!normalizeWhitespace(data.twitter_card)) issueRows.push({ page_url: url, issue_type: 'twitter_card_missing', severity: 'low', details: 'Missing twitter:card meta tag.' });
+  if (!normalizeWhitespace(data.twitter_image)) issueRows.push({ page_url: url, issue_type: 'twitter_image_missing', severity: 'low', details: 'Missing twitter:image meta tag.' });
+
+  // ── Image alt text checks ────────────────────────────────────────────
+  let missingAlt = 0, filenameAlt = 0;
+  for (const img of data.images) {
+    const alt = normalizeWhitespace(img.alt);
+    const src = normalizeWhitespace(img.src);
+    imageRows.push({
+      page_url: url,
+      image_url: src,
+      alt_text: alt,
+      title_text: normalizeWhitespace(img.title),
+      alt_present: alt ? 'yes' : 'no',
+      alt_looks_like_filename: looksLikeFilename(alt) ? 'yes' : 'no',
+    });
+    if (!alt) missingAlt++;
+    else if (looksLikeFilename(alt)) filenameAlt++;
+  }
+  if (missingAlt > 0) issueRows.push({ page_url: url, issue_type: 'image_alt_missing', severity: 'medium', details: `${missingAlt} image(s) are missing alt text.` });
+  if (filenameAlt > 0) issueRows.push({ page_url: url, issue_type: 'image_alt_filename', severity: 'low', details: `${filenameAlt} image(s) appear to use filename-like alt text.` });
+
+  // ── Structured data row ──────────────────────────────────────────────
+  structuredRows.push({
+    page_url: url,
+    x_robots_tag: xRobotsTag,
+    html_lang: normalizeWhitespace(data.html_lang),
+    viewport_meta: normalizeWhitespace(data.viewport_meta),
+    canonical,
+    canonical_status: cStatus,
+    hreflang_count,
+    hreflang_values,
+    jsonld_count: data.jsonld_count,
+    jsonld_valid_count: data.jsonld_valid_count,
+    jsonld_invalid_count: data.jsonld_invalid_count,
+    schema_present: data.jsonld_count > 0 ? 'yes' : 'no',
+    schema_valid: data.jsonld_count > 0 && data.jsonld_invalid_count === 0 ? 'yes' : 'no',
+    schema_types: data.schema_types,
+    dom_node_count: data.dom_node_count,
+    script_tag_count: data.script_tag_count,
+    stylesheet_count: data.stylesheet_count,
+    resource_count: data.resource_count,
+  });
+
+  // ── Social meta row ──────────────────────────────────────────────────
+  socialRows.push({
+    page_url: url,
+    final_url: finalUrl,
+    title,
+    og_title: normalizeWhitespace(data.og_title),
+    og_description: normalizeWhitespace(data.og_description),
+    og_image: normalizeWhitespace(data.og_image),
+    og_url: normalizeWhitespace(data.og_url),
+    twitter_card: normalizeWhitespace(data.twitter_card),
+    twitter_title: normalizeWhitespace(data.twitter_title),
+    twitter_description: normalizeWhitespace(data.twitter_description),
+    twitter_image: normalizeWhitespace(data.twitter_image),
+  });
+
+  // ── Page row ─────────────────────────────────────────────────────────
+  const assetsOnPage = assetRows.length - pageAssetStart;
   pageRows.push({
     page_url: url,
-    title: data.title,
+    final_url: finalUrl,
+    title,
+    title_length: data.title_length,
+    meta_description: desc,
+    meta_description_length: data.meta_description_length,
     status_code: status,
+    robots_meta: robotsMeta,
+    x_robots_tag: xRobotsTag,
+    indexable: data.robots_indexable ? 'yes' : 'no',
+    followable: data.robots_followable ? 'yes' : 'no',
+    viewport_meta: data.viewport_meta,
+    html_lang: data.html_lang,
     canonical,
     canonical_count,
-    canonical_status,
+    canonical_status: cStatus,
+    h1_count: data.h1_count,
+    h1_text: data.h1_text,
+    word_count: data.word_count,
+    heading_outline: data.heading_outline,
+    og_title: normalizeWhitespace(data.og_title),
+    og_description: normalizeWhitespace(data.og_description),
+    og_image: normalizeWhitespace(data.og_image),
+    og_url: normalizeWhitespace(data.og_url),
+    internal_link_count: internalLinkCount,
+    external_link_count: externalLinkCount,
+    image_count: data.images.length,
     hreflang_present: hreflang_count > 0 ? 'yes' : 'no',
     hreflang_count,
     hreflang_invalid_count: hreflangValidation.invalid,
     hreflang_duplicate_count: hreflangValidation.duplicates,
     hreflang_has_x_default: hreflangValidation.hasXDefault,
     hreflang_values,
-    asset_count: assetRows.length - pageAssetStart,
-    section
+    jsonld_count: data.jsonld_count,
+    jsonld_invalid_count: data.jsonld_invalid_count,
+    schema_types: data.schema_types,
+    dom_node_count: data.dom_node_count,
+    resource_count: data.resource_count,
+    asset_count: assetsOnPage,
+    section,
+    body_excerpt: data.body_excerpt,
   });
   const sec = sectionMap.get(section) || { section, page_count: 0, asset_count: 0, issue_count: 0 };
   sec.page_count += 1;
-  sec.asset_count += (assetRows.length - pageAssetStart);
+  sec.asset_count += assetsOnPage;
   sec.issue_count += issueRows.filter((i) => i.page_url === url).length;
   sectionMap.set(section, sec);
 
+  // ── Lighthouse ───────────────────────────────────────────────────────
   let lighthouseRow = null;
   if (runLighthouse) {
     progressLine(pageNum, totalPages, shortUrl, `${c.brightYellow}⚡ Lighthouse...${c.reset}`);
     try {
       lighthouseRow = await runLighthouseAudit(url, { port: lighthouseChrome?.port });
       lighthouseRows.push(lighthouseRow);
-    }
-    catch (e) {
+      if (Number(lighthouseRow.performance_score || 0) > 0 && Number(lighthouseRow.performance_score) < 50) issueRows.push({ page_url: url, issue_type: 'poor_performance', severity: 'medium', details: `Low Lighthouse performance score: ${lighthouseRow.performance_score}.` });
+      if (Number(lighthouseRow.lcp_ms || 0) > 4000) issueRows.push({ page_url: url, issue_type: 'lcp_slow', severity: 'high', details: `Largest Contentful Paint is slow: ${lighthouseRow.lcp_ms}ms.` });
+      if (Number(lighthouseRow.cls || 0) > 0.25) issueRows.push({ page_url: url, issue_type: 'cls_high', severity: 'high', details: `Cumulative Layout Shift is high: ${lighthouseRow.cls}.` });
+      if (Number(lighthouseRow.tbt_ms || 0) > 300) issueRows.push({ page_url: url, issue_type: 'tbt_high', severity: 'medium', details: `Total Blocking Time is high: ${lighthouseRow.tbt_ms}ms.` });
+    } catch (e) {
       lighthouseRow = { url, page_url: url, final_url: url, lighthouse_available: 'no', performance: '', performance_score: '', lcp: '', lcp_ms: '', cls: '', tbt: '', tbt_ms: '', fcp: '', fcp_ms: '', si_ms: '', error: String(e), note: String(e) };
       lighthouseRows.push(lighthouseRow);
     }
   }
 
+  // ── Agentic signals ──────────────────────────────────────────────────
   try {
     const agenticRow = await collectAgenticSignals(page, url, lighthouseRow || {});
     agenticRows.push(agenticRow);
@@ -492,6 +799,7 @@ while (queue.length && (!maxPages || seenPages.size < maxPages)) {
     agenticRows.push({ page_url: url, agentic_score: '', agentic_grade: '', note: `Agentic scoring failed: ${String(e?.message || e)}` });
   }
 
+  // ── Script inventory / CSP ───────────────────────────────────────────
   try {
     const scriptRow = await collectScriptInventory(page, url);
     const csvRow = { ...scriptRow };
@@ -508,10 +816,10 @@ while (queue.length && (!maxPages || seenPages.size < maxPages)) {
     scriptRows.push({ page_url: url, total_script_count: 0, note: `Script audit failed: ${String(e?.message || e)}` });
   }
 
+  // ── Per-page summary ─────────────────────────────────────────────────
   const pageElapsed = Date.now() - pageStart;
   pageTimes.push(pageElapsed);
   const issuesOnPage = issueRows.filter((i) => i.page_url === url).length;
-  const assetsOnPage = assetRows.length - pageAssetStart;
   const issueIcon = issuesOnPage === 0 ? `${c.brightGreen}✔${c.reset}` : issuesOnPage > 5 ? `${c.brightRed}✖${c.reset}` : `${c.brightYellow}●${c.reset}`;
   console.log(`  ${issueIcon} ${c.dim}[${pageNum}/${totalPages}]${c.reset} ${c.brightCyan}${formatDuration(pageElapsed)}${c.reset} ${c.dim}│${c.reset} ${c.white}${assetsOnPage}${c.reset} assets ${c.dim}│${c.reset} ${severityColor(issuesOnPage, 5)} issues ${c.dim}│${c.reset} ${c.dim}${shortUrl}${c.reset}`);
 }
@@ -523,25 +831,219 @@ statusMsg('📊', c.brightCyan, `Total: ${severityColor(issueRows.length, 20)} i
 await closeLighthouseChrome();
 await browser.close();
 
+// ── Post-scan: duplicate titles/descriptions ───────────────────────────
+for (const [titleKey, pages] of titleMap.entries()) {
+  if (!titleKey || pages.size < 2) continue;
+  const list = Array.from(pages).slice(0, 10);
+  for (const pageUrl of list) issueRows.push({ page_url: pageUrl, issue_type: 'duplicate_title', severity: 'high', details: `Title is duplicated across ${pages.size} pages. Example pages: ${list.join(' | ')}` });
+}
+for (const [descKey, pages] of descMap.entries()) {
+  if (!descKey || pages.size < 2) continue;
+  const list = Array.from(pages).slice(0, 10);
+  for (const pageUrl of list) issueRows.push({ page_url: pageUrl, issue_type: 'duplicate_meta_description', severity: 'medium', details: `Meta description is duplicated across ${pages.size} pages. Example pages: ${list.join(' | ')}` });
+}
+
+// ── Post-scan: link validation ─────────────────────────────────────────
+if (uniqueLinks.size > 0) {
+  phaseHeader('Phase 3b: Link validation', '🔗');
+  const linkStart = Date.now();
+  statusMsg('◐', c.cyan, `Checking up to ${c.bold}${uniqueLinks.size}${c.reset} unique links...`);
+  const linkStatuses = new Map();
+  let checked = 0;
+  for (const href of uniqueLinks.keys()) {
+    checked++;
+    if (checked % 25 === 0 || checked === uniqueLinks.size) progressLine(checked, uniqueLinks.size, 'links checked');
+    linkStatuses.set(href, await checkLink(href));
+  }
+  console.log('');
+  for (const [pageUrl, links] of pageLinksMap.entries()) {
+    for (const link of links.slice(0, 50)) {
+      const res = linkStatuses.get(link.href);
+      if (!res) continue;
+      if (res.status >= 400 || (!res.ok && res.status === 0)) {
+        if (link.kind === 'internal') issueRows.push({ page_url: pageUrl, issue_type: 'broken_internal_link', severity: 'high', details: `Broken internal link: ${link.href} (${res.status || 'network error'})` });
+        else issueRows.push({ page_url: pageUrl, issue_type: 'broken_external_link', severity: 'medium', details: `Broken external link: ${link.href} (${res.status || 'network error'})` });
+      }
+    }
+  }
+  phaseDone('Link validation', Date.now() - linkStart);
+}
+
+// ── Post-scan: duplicate content clustering ────────────────────────────
+const contentCandidates = pageRows
+  .map((p) => ({ page_url: p.page_url, word_count: Number(p.word_count || 0), body_excerpt: p.body_excerpt || '' }))
+  .filter((p) => p.word_count >= 150 && p.body_excerpt);
+const usedInCluster = new Set();
+const limit = Math.min(contentCandidates.length, 120);
+for (let i = 0; i < limit; i++) {
+  if (usedInCluster.has(contentCandidates[i].page_url)) continue;
+  const a = contentCandidates[i];
+  const aSet = tokenSet(a.body_excerpt);
+  const cluster = [a.page_url];
+  for (let j = i + 1; j < limit; j++) {
+    const b = contentCandidates[j];
+    if (usedInCluster.has(b.page_url)) continue;
+    const sim = jaccardSimilarity(aSet, tokenSet(b.body_excerpt));
+    if (sim >= 0.82) {
+      cluster.push(b.page_url);
+      usedInCluster.add(b.page_url);
+    }
+  }
+  if (cluster.length > 1) {
+    for (const pageUrl of cluster) {
+      issueRows.push({ page_url: pageUrl, issue_type: 'duplicate_content_cluster', severity: 'medium', details: `Page body content is highly similar to ${cluster.length - 1} other page(s). Cluster sample: ${cluster.slice(0, 5).join(' | ')}` });
+    }
+  }
+}
+
+// ── Post-scan: crawl analysis (link depth + orphan candidates) ─────────
+const scannedUrls = [...seenPages];
+const adjacency = new Map();
+const inlinks = new Map();
+for (const u of scannedUrls) { adjacency.set(u, []); inlinks.set(u, 0); }
+for (const [pageUrl, links] of pageLinksMap.entries()) {
+  for (const link of links) {
+    if (link.kind !== 'internal') continue;
+    const target = normalizeUrl(link.href);
+    if (!seenPages.has(target)) continue;
+    adjacency.get(pageUrl)?.push(target);
+    inlinks.set(target, (inlinks.get(target) || 0) + 1);
+  }
+}
+const depth = new Map();
+if (scannedUrls.length) {
+  const bfsQueue = [scannedUrls[0]];
+  depth.set(scannedUrls[0], 0);
+  while (bfsQueue.length) {
+    const node = bfsQueue.shift();
+    for (const target of adjacency.get(node) || []) {
+      if (!depth.has(target)) {
+        depth.set(target, depth.get(node) + 1);
+        bfsQueue.push(target);
+      }
+    }
+  }
+}
+for (const u of scannedUrls) {
+  const urlInlinks = inlinks.get(u) || 0;
+  const urlDepth = depth.has(u) ? depth.get(u) : '';
+  crawlRows.push({
+    page_url: u,
+    final_url: pageRows.find((p) => p.page_url === u)?.final_url || u,
+    status_code: pageRows.find((p) => p.page_url === u)?.status_code || '',
+    section: getSection(u),
+    inlinks: urlInlinks,
+    internal_link_depth: urlDepth,
+    orphan_candidate: u !== scannedUrls[0] && urlInlinks === 0 ? 'yes' : 'no',
+    crawl_discovered: urlDepth === '' ? 'no' : 'yes',
+    sitemap_only_candidate: u !== scannedUrls[0] && urlDepth === '' ? 'yes' : 'no',
+  });
+  if (u !== scannedUrls[0] && urlInlinks === 0) {
+    issueRows.push({ page_url: u, issue_type: 'orphan_candidate', severity: 'medium', details: 'Page has zero internal inlinks within the scanned set and may be an orphan candidate.' });
+  }
+}
+
+// ── CDN inconsistency ──────────────────────────────────────────────────
 const externalHosts = assetRows.filter((r) => r.asset_host && r.asset_host !== canonicalHost).map((r) => r.final_host || r.asset_host);
 const uniqueExternalHosts = [...new Set(externalHosts)];
 if (uniqueExternalHosts.length > 1) {
   issueRows.push({ page_url: site, issue_type: 'cdn_inconsistency', severity: 'medium', details: `Multiple external asset hosts detected: ${uniqueExternalHosts.join(' | ')}` });
 }
 
+// ── Issue counts per page ──────────────────────────────────────────────
+const issueCounts = issueRows.reduce((acc, row) => { acc[row.page_url] = (acc[row.page_url] || 0) + 1; return acc; }, {});
+for (const p of pageRows) p.issue_count = issueCounts[p.page_url] || 0;
+
+// ════════════════════════════════════════════════════════════════════════
+// Phase 4: Report generation
+// ════════════════════════════════════════════════════════════════════════
 phaseHeader('Phase 4: Report generation', '📝');
 const reportStart = Date.now();
 statusMsg('💾', c.cyan, 'Writing CSV data files...');
-writeCsv(path.join(outDir, 'seo-pages.csv'), ['page_url','title','status_code','canonical','canonical_count','canonical_status','hreflang_present','hreflang_count','hreflang_invalid_count','hreflang_duplicate_count','hreflang_has_x_default','hreflang_values','asset_count','section'], pageRows);
-writeCsv(path.join(outDir, 'seo-assets.csv'), ['page_url','asset_url','asset_type','source','status_code','final_url','asset_host','final_host','ok','broken','host_mismatch','www_mismatch','non_canonical_host','staging_production_mixup','protocol_mismatch','content_type'], assetRows);
-writeCsv(path.join(outDir, 'seo-issues.csv'), ['page_url','issue_type','severity','details'], issueRows);
-writeCsv(path.join(outDir, 'seo-section-summary.csv'), ['section','page_count','asset_count','issue_count'], Array.from(sectionMap.values()));
-writeCsv(path.join(outDir, 'seo-asset-host-summary.csv'), ['host','count'], Array.from(hostMap.entries()).sort((a,b) => b[1] - a[1]).map(([host, count]) => ({ host, count })));
-if (runLighthouse) writeCsv(path.join(outDir, 'seo-lighthouse.csv'), ['url','performance','lcp','cls','tbt','fcp','error'], lighthouseRows);
-writeCsv(path.join(outDir, 'seo-agentic.csv'), ['page_url','agentic_score','agentic_grade','webmcp_protocol_score','webmcp_tools_registered','webmcp_tools_with_schema','webmcp_reference_count','webmcp_tool_names','accessibility_tree_score','form_control_count','named_form_control_count','clickable_count','named_clickable_count','semantic_data_score','llms_txt_present','llms_txt_url','llms_txt_status','llms_txt_bytes','llms_txt_headings','llms_txt_links','layout_stability_score','cls','visible_image_count','images_with_dimensions_count','note'], agenticRows);
-writeCsv(path.join(outDir, 'seo-scripts.csv'), ['page_url','external_script_count','inline_script_count','total_script_count','inline_event_handler_count','javascript_link_count','first_party_script_domains','first_party_script_count','third_party_script_domains','third_party_script_count','unique_script_domains','uses_eval','uses_document_write','uses_innerhtml','all_inline_have_nonce','all_external_have_integrity','async_script_count','defer_script_count','render_blocking_script_count','needs_unsafe_inline','needs_unsafe_eval','suggested_script_src'], scriptRows);
+
+writeCsv(path.join(outDir, 'seo-pages.csv'),
+  ['page_url','final_url','title','title_length','meta_description','meta_description_length','status_code','robots_meta','x_robots_tag','indexable','followable','viewport_meta','html_lang','canonical','canonical_count','canonical_status','h1_count','h1_text','word_count','heading_outline','og_title','og_description','og_image','og_url','internal_link_count','external_link_count','image_count','hreflang_present','hreflang_count','hreflang_invalid_count','hreflang_duplicate_count','hreflang_has_x_default','hreflang_values','jsonld_count','jsonld_invalid_count','schema_types','dom_node_count','resource_count','asset_count','section','issue_count'],
+  pageRows.map(({ body_excerpt, ...rest }) => rest));
+
+writeCsv(path.join(outDir, 'seo-assets.csv'),
+  ['page_url','asset_url','asset_type','source','status_code','final_url','asset_host','final_host','ok','broken','host_mismatch','www_mismatch','non_canonical_host','staging_production_mixup','protocol_mismatch','content_type'],
+  assetRows);
+
+writeCsv(path.join(outDir, 'seo-issues.csv'),
+  ['page_url','issue_type','severity','details'],
+  issueRows);
+
+writeCsv(path.join(outDir, 'seo-images.csv'),
+  ['page_url','image_url','alt_text','title_text','alt_present','alt_looks_like_filename'],
+  imageRows);
+
+writeCsv(path.join(outDir, 'seo-social.csv'),
+  ['page_url','final_url','title','og_title','og_description','og_image','og_url','twitter_card','twitter_title','twitter_description','twitter_image'],
+  socialRows);
+
+writeCsv(path.join(outDir, 'seo-structured-data.csv'),
+  ['page_url','x_robots_tag','html_lang','viewport_meta','canonical','canonical_status','hreflang_count','hreflang_values','jsonld_count','jsonld_valid_count','jsonld_invalid_count','schema_present','schema_valid','schema_types','dom_node_count','script_tag_count','stylesheet_count','resource_count'],
+  structuredRows);
+
+writeCsv(path.join(outDir, 'seo-crawl-analysis.csv'),
+  ['page_url','final_url','status_code','section','inlinks','internal_link_depth','orphan_candidate','crawl_discovered','sitemap_only_candidate'],
+  crawlRows);
+
+writeCsv(path.join(outDir, 'seo-section-summary.csv'),
+  ['section','page_count','asset_count','issue_count'],
+  Array.from(sectionMap.values()));
+
+writeCsv(path.join(outDir, 'seo-asset-host-summary.csv'),
+  ['host','count'],
+  Array.from(hostMap.entries()).sort((a, b) => b[1] - a[1]).map(([host, count]) => ({ host, count })));
+
+if (runLighthouse) writeCsv(path.join(outDir, 'seo-lighthouse.csv'),
+  ['url','page_url','final_url','lighthouse_available','performance','performance_score','lcp','lcp_ms','cls','tbt','tbt_ms','fcp','fcp_ms','si_ms','note'],
+  lighthouseRows);
+
+writeCsv(path.join(outDir, 'seo-agentic.csv'),
+  ['page_url','agentic_score','agentic_grade','webmcp_protocol_score','webmcp_tools_registered','webmcp_tools_with_schema','webmcp_reference_count','webmcp_tool_names','accessibility_tree_score','form_control_count','named_form_control_count','clickable_count','named_clickable_count','semantic_data_score','llms_txt_present','llms_txt_url','llms_txt_status','llms_txt_bytes','llms_txt_headings','llms_txt_links','layout_stability_score','cls','visible_image_count','images_with_dimensions_count','note'],
+  agenticRows);
+
+writeCsv(path.join(outDir, 'seo-scripts.csv'),
+  ['page_url','external_script_count','inline_script_count','total_script_count','inline_event_handler_count','javascript_link_count','first_party_script_domains','first_party_script_count','third_party_script_domains','third_party_script_count','unique_script_domains','uses_eval','uses_document_write','uses_innerhtml','all_inline_have_nonce','all_external_have_integrity','async_script_count','defer_script_count','render_blocking_script_count','needs_unsafe_inline','needs_unsafe_eval','suggested_script_src'],
+  scriptRows);
+
 const cspSummary = buildCspSummary(scriptRows, origin);
-writeCsv(path.join(outDir, 'seo-csp-summary.csv'), ['pages_audited','total_external_scripts','total_inline_scripts','total_inline_event_handlers','total_javascript_links','total_render_blocking','unique_third_party_domains','third_party_domains','needs_unsafe_inline','needs_unsafe_eval','pages_with_eval','pages_with_document_write','suggested_script_src'], [cspSummary]);
+writeCsv(path.join(outDir, 'seo-csp-summary.csv'),
+  ['pages_audited','total_external_scripts','total_inline_scripts','total_inline_event_handlers','total_javascript_links','total_render_blocking','unique_third_party_domains','third_party_domains','needs_unsafe_inline','needs_unsafe_eval','pages_with_eval','pages_with_document_write','suggested_script_src'],
+  [cspSummary]);
+
+// JSON report
+const byIssueType = issueRows.reduce((acc, row) => { acc[row.issue_type] = (acc[row.issue_type] || 0) + 1; return acc; }, {});
+fs.writeFileSync(path.join(outDir, 'seo-report.json'), JSON.stringify({
+  runId: path.basename(outDir),
+  scanned: scannedUrls,
+  pages: pageRows.map(({ body_excerpt, ...rest }) => rest),
+  issues: issueRows,
+  images: imageRows,
+  structured: structuredRows,
+  social: socialRows,
+  agentic: agenticRows,
+}, null, 2));
+
+fs.writeFileSync(path.join(outDir, 'seo-run-metadata.json'), JSON.stringify({
+  runId: path.basename(outDir),
+  startedAt: new Date(auditStartTime).toISOString(),
+  finishedAt: new Date().toISOString(),
+  pagesScanned: seenPages.size,
+  issuesFound: issueRows.length,
+  assetsScanned: assetRows.length,
+  imagesScanned: imageRows.length,
+  structuredRows: structuredRows.length,
+  socialRows: socialRows.length,
+  crawlRows: crawlRows.length,
+  agenticRows: agenticRows.length,
+  lighthouseRows: runLighthouse ? lighthouseRows.length : 0,
+  byIssueType,
+  topIssueTypes: Object.entries(byIssueType).sort((a, b) => b[1] - a[1]).slice(0, 20).map(([issue_type, count]) => ({ issue_type, count })),
+}, null, 2));
+
 if (!args['no-visual-report']) {
   statusMsg('🎨', c.cyan, 'Generating visual dashboard and PDF report...');
   const visualArgs = [path.resolve('scripts/generate-visual-report.mjs'), '--run-dir', outDir, '--site', site];
@@ -551,6 +1053,7 @@ if (!args['no-visual-report']) {
 }
 phaseDone('Reports written', Date.now() - reportStart);
 
+// ── Summary ────────────────────────────────────────────────────────────
 const totalElapsed = Date.now() - auditStartTime;
 const totalScripts = scriptRows.reduce((a, r) => a + (r.total_script_count || 0), 0);
 const extScripts = scriptRows.reduce((a, r) => a + (r.external_script_count || 0), 0);
@@ -563,8 +1066,10 @@ console.log('');
 console.log(`  ${c.brightCyan}🎯${c.reset} ${c.bold}Site${c.reset}        ${site}`);
 console.log(`  ${c.brightCyan}📄${c.reset} ${c.bold}Pages${c.reset}       ${c.brightGreen}${seenPages.size}${c.reset}`);
 console.log(`  ${c.brightCyan}🔗${c.reset} ${c.bold}Assets${c.reset}      ${c.brightGreen}${assetRows.length}${c.reset}`);
+console.log(`  ${c.brightCyan}🖼️${c.reset}  ${c.bold}Images${c.reset}      ${c.brightGreen}${imageRows.length}${c.reset}`);
 console.log(`  ${c.brightCyan}⚠️${c.reset}  ${c.bold}Issues${c.reset}      ${severityColor(issueRows.length, 20)}`);
 console.log(`  ${c.brightCyan}📜${c.reset} ${c.bold}Scripts${c.reset}     ${c.brightGreen}${totalScripts}${c.reset} ${c.dim}(${extScripts} external, ${inlScripts} inline)${c.reset}`);
+console.log(`  ${c.brightCyan}📐${c.reset} ${c.bold}Schema${c.reset}      ${c.brightGreen}${structuredRows.filter((r) => r.schema_present === 'yes').length}${c.reset}${c.dim}/${structuredRows.length} pages with structured data${c.reset}`);
 console.log(`  ${c.brightCyan}⏱️${c.reset}  ${c.bold}Time${c.reset}        ${c.brightYellow}${formatDuration(totalElapsed)}${c.reset}`);
 console.log(`  ${c.brightCyan}📁${c.reset} ${c.bold}Output${c.reset}      ${c.dim}${outDir}${c.reset}`);
 console.log('');
