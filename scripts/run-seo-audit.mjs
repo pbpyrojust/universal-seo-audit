@@ -133,7 +133,7 @@ function rainbowBar(filled, empty, width = 30) {
   for (let i = 0; i < filled; i++) {
     chars.push(`${rainbowColors[i % rainbowColors.length]}${'█'}`);
   }
-  return chars.join('') + `${c.dim}${'░'.repeat(empty)}${c.reset}`;
+  return chars.join('') + `${c.dim}${'░'.repeat(Math.max(0, empty))}${c.reset}`;
 }
 function formatDuration(ms) {
   if (ms < 1000) return `${Math.round(ms)}ms`;
@@ -147,9 +147,9 @@ const spinnerFrames = ['◐', '◓', '◑', '◒'];
 let spinnerIdx = 0;
 function spinner() { return rainbowColors[spinnerIdx % rainbowColors.length] + spinnerFrames[spinnerIdx++ % spinnerFrames.length] + c.reset; }
 function progressLine(current, total, label, extra = '') {
-  const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+  const pct = total > 0 ? Math.min(100, Math.round((current / total) * 100)) : 0;
   const barWidth = 30;
-  const filled = total > 0 ? Math.round((current / total) * barWidth) : 0;
+  const filled = total > 0 ? Math.min(barWidth, Math.round((current / total) * barWidth)) : 0;
   const bar = rainbowBar(filled, barWidth - filled, barWidth);
   const pctStr = pct === 100 ? `${c.brightGreen}${pct}%${c.reset}` : `${c.brightCyan}${pct}%${c.reset}`;
   const spin = current < total ? spinner() : `${c.brightGreen}✔${c.reset}`;
