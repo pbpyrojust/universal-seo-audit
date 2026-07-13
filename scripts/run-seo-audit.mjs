@@ -146,14 +146,14 @@ function formatDuration(ms) {
 const spinnerFrames = ['◐', '◓', '◑', '◒'];
 let spinnerIdx = 0;
 function spinner() { return rainbowColors[spinnerIdx % rainbowColors.length] + spinnerFrames[spinnerIdx++ % spinnerFrames.length] + c.reset; }
-function progressLine(current, total, label, extra = '') {
+function progressLine(current, total, label, extra = '', done = current >= total && total > 0) {
   const pct = total > 0 ? Math.min(100, Math.round((current / total) * 100)) : 0;
   const barWidth = 30;
   const filled = total > 0 ? Math.min(barWidth, Math.round((current / total) * barWidth)) : 0;
   const bar = rainbowBar(filled, barWidth - filled, barWidth);
   const pctStr = pct === 100 ? `${c.brightGreen}${pct}%${c.reset}` : `${c.brightCyan}${pct}%${c.reset}`;
-  const spin = current < total ? spinner() : `${c.brightGreen}✔${c.reset}`;
-  process.stdout.write(`\r  ${spin} ${bar} ${c.bold}${current}${c.reset}${c.dim}/${total}${c.reset} ${pctStr} ${c.dim}${label}${c.reset}${extra ? ' ' + extra : ''}`.padEnd(160) + '\r');
+  const spin = done ? `${c.brightGreen}✔${c.reset}` : spinner();
+  process.stdout.write(`\r  ${spin} ${bar} ${c.bold}${current}${c.reset}${c.dim}/${total}${c.reset} ${pctStr} ${c.dim}${label}${c.reset}${extra ? ' ' + extra : ''}\x1b[K`);
 }
 function phaseHeader(label, icon = '▸') {
   console.log('');
@@ -425,10 +425,10 @@ if (args['urls-file']) {
 if (runLighthouse && discoveredUrls.length > 50 && !maxPages) {
   statusMsg('⚠', c.brightYellow, `Lighthouse enabled for ${c.bold}${discoveredUrls.length}${c.reset}${c.brightYellow} URLs — this will take a while. Use --max-pages 10 for a sample.${c.reset}`);
 }
-const totalPages = maxPages ? Math.min(maxPages, discoveredUrls.length) : discoveredUrls.length;
+let totalPages = maxPages ? Math.min(maxPages, discoveredUrls.length) : discoveredUrls.length;
 const estPerPage = runLighthouse ? 25000 : 8000;
 const estTotal = totalPages * estPerPage;
-statusMsg('⏱️', c.brightMagenta, `Estimated: ${c.bold}~${formatDuration(estTotal)}${c.reset} ${c.dim}(${totalPages} pages${runLighthouse ? ' + Lighthouse' : ''})${c.reset}`);
+statusMsg('⏱️', c.brightMagenta, `Estimated: ${c.bold}~${formatDuration(estTotal)}${c.reset} ${c.dim}(${totalPages} page${totalPages === 1 ? '' : 's'}${runLighthouse ? ' + Lighthouse' : ''}${args['crawl'] ? ', more discovered as crawl proceeds' : ''})${c.reset}`);
 phaseDone('URL discovery', Date.now() - discoveryStart);
 
 // ── Phase 3: Page scanning ─────────────────────────────────────────────
@@ -475,7 +475,7 @@ while (queue.length && (!maxPages || seenPages.size < maxPages)) {
   const remaining = totalPages - pageNum;
   const eta = remaining > 0 ? formatDuration(remaining * avgMs) : '0s';
   const shortUrl = url.length > 55 ? url.slice(0, 52) + '...' : url;
-  progressLine(pageNum, totalPages, shortUrl, `${c.dim}ETA:${c.reset} ${c.brightYellow}~${eta}${c.reset}`);
+  progressLine(pageNum, totalPages, shortUrl, `${c.dim}ETA:${c.reset} ${c.brightYellow}~${eta}${c.reset}`, false);
   let status = 0;
   let responseHeaders = {};
   try {
@@ -520,7 +520,10 @@ while (queue.length && (!maxPages || seenPages.size < maxPages)) {
       if (/^(mailto:|tel:|javascript:)/i.test(abs)) continue;
       const kind = sameOrigin(abs, origin) ? 'internal' : 'external';
       linksForPage.push({ href: abs, kind, anchor_text: normalizeWhitespace(l.text) });
-      if (kind === 'internal' && args['crawl'] && !seenPages.has(abs) && (!maxPages || queue.length + seenPages.size < maxPages)) queue.push(abs);
+      if (kind === 'internal' && args['crawl'] && !seenPages.has(abs) && !queue.includes(abs) && (!maxPages || queue.length + seenPages.size < maxPages)) {
+        queue.push(abs);
+        totalPages++;
+      }
       if (!uniqueLinks.has(abs) && uniqueLinks.size < maxLinkChecks) uniqueLinks.set(abs, kind);
     } catch {}
   }
@@ -771,7 +774,7 @@ while (queue.length && (!maxPages || seenPages.size < maxPages)) {
   // ── Lighthouse ───────────────────────────────────────────────────────
   let lighthouseRow = null;
   if (runLighthouse) {
-    progressLine(pageNum, totalPages, shortUrl, `${c.brightYellow}⚡ Lighthouse...${c.reset}`);
+    progressLine(pageNum, totalPages, shortUrl, `${c.brightYellow}⚡ Lighthouse...${c.reset}`, false);
     try {
       lighthouseRow = await runLighthouseAudit(url, { port: lighthouseChrome?.port });
       lighthouseRows.push(lighthouseRow);
@@ -821,7 +824,7 @@ while (queue.length && (!maxPages || seenPages.size < maxPages)) {
   pageTimes.push(pageElapsed);
   const issuesOnPage = issueRows.filter((i) => i.page_url === url).length;
   const issueIcon = issuesOnPage === 0 ? `${c.brightGreen}✔${c.reset}` : issuesOnPage > 5 ? `${c.brightRed}✖${c.reset}` : `${c.brightYellow}●${c.reset}`;
-  console.log(`  ${issueIcon} ${c.dim}[${pageNum}/${totalPages}]${c.reset} ${c.brightCyan}${formatDuration(pageElapsed)}${c.reset} ${c.dim}│${c.reset} ${c.white}${assetsOnPage}${c.reset} assets ${c.dim}│${c.reset} ${severityColor(issuesOnPage, 5)} issues ${c.dim}│${c.reset} ${c.dim}${shortUrl}${c.reset}`);
+  console.log(`\r\x1b[K  ${issueIcon} ${c.dim}[${pageNum}/${totalPages}]${c.reset} ${c.brightCyan}${formatDuration(pageElapsed)}${c.reset} ${c.dim}│${c.reset} ${c.white}${assetsOnPage}${c.reset} assets ${c.dim}│${c.reset} ${severityColor(issuesOnPage, 5)} issues ${c.dim}│${c.reset} ${c.dim}${shortUrl}${c.reset}`);
 }
 
 console.log('');
@@ -855,7 +858,7 @@ if (uniqueLinks.size > 0) {
     if (checked % 25 === 0 || checked === uniqueLinks.size) progressLine(checked, uniqueLinks.size, 'links checked');
     linkStatuses.set(href, await checkLink(href));
   }
-  console.log('');
+  console.log('\r\x1b[K');
   for (const [pageUrl, links] of pageLinksMap.entries()) {
     for (const link of links.slice(0, 50)) {
       const res = linkStatuses.get(link.href);
