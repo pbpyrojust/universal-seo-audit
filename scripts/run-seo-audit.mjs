@@ -2,6 +2,24 @@
 import fs from 'fs';
 import path from 'path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+// Large --crawl runs accumulate thousands of page/asset/issue rows in memory before
+// they're flushed to CSV at the end (see Phase 4). The default V8 heap ceiling (~4GB)
+// isn't enough for that on big sites, and heap flags can only be set at process start —
+// so re-exec ourselves once with a much larger ceiling before doing any real work.
+if (!process.env.__SEO_AUDIT_REEXEC__) {
+  const hasHeapFlag = process.execArgv.some((f) => f.startsWith('--max-old-space-size'));
+  if (!hasHeapFlag) {
+    const result = spawnSync(
+      process.execPath,
+      ['--max-old-space-size=8192', fileURLToPath(import.meta.url), ...process.argv.slice(2)],
+      { stdio: 'inherit', env: { ...process.env, __SEO_AUDIT_REEXEC__: '1' } }
+    );
+    process.exit(result.status ?? 1);
+  }
+}
+
 import { chromium } from 'playwright';
 import { runLighthouseAudit, launchLighthouseChrome, closeLighthouseChrome } from './lib/lighthouse-runner.mjs';
 import { checkAsset, classifyAssetType } from './lib/asset-checker.mjs';
@@ -39,6 +57,10 @@ function normalizeUrl(u) {
 function normalizeWhitespace(s) { return String(s || '').replace(/\s+/g, ' ').trim(); }
 function sameOrigin(a, b) {
   try { return new URL(a).origin === new URL(b).origin; } catch { return false; }
+}
+const NON_PAGE_EXTENSION_RE = /\.(jpg|jpeg|png|gif|webp|avif|bmp|ico|svg|tiff?|heic|pdf|docx?|xlsx?|pptx?|zip|rar|7z|tar|gz|dmg|exe|mp3|mp4|m4a|mov|avi|wav|ogg|ogv|webm|flac|woff2?|ttf|eot|otf|csv|xml|json|rss|css|js|mjs)$/i;
+function isCrawlablePage(u) {
+  try { return !NON_PAGE_EXTENSION_RE.test(new URL(u).pathname); } catch { return true; }
 }
 function canonicalStatus(pageUrl, canonicalUrl, count) {
   if (!canonicalUrl) return 'missing';
@@ -421,6 +443,9 @@ if (args['urls-file']) {
 } else {
   discoveredUrls = [normalizeUrl(site)];
   statusMsg('🕷️', c.cyan, 'Browser crawl mode');
+  if (!args['crawl-assets']) {
+    statusMsg('🖼️', c.dim, `Media/asset links (images, PDFs, etc.) are checked but not crawled as pages. Use ${c.bold}--crawl-assets${c.reset} to include them.`);
+  }
 }
 if (runLighthouse && discoveredUrls.length > 50 && !maxPages) {
   statusMsg('⚠', c.brightYellow, `Lighthouse enabled for ${c.bold}${discoveredUrls.length}${c.reset}${c.brightYellow} URLs — this will take a while. Use --max-pages 10 for a sample.${c.reset}`);
@@ -520,7 +545,7 @@ while (queue.length && (!maxPages || seenPages.size < maxPages)) {
       if (/^(mailto:|tel:|javascript:)/i.test(abs)) continue;
       const kind = sameOrigin(abs, origin) ? 'internal' : 'external';
       linksForPage.push({ href: abs, kind, anchor_text: normalizeWhitespace(l.text) });
-      if (kind === 'internal' && args['crawl'] && !seenPages.has(abs) && !queue.includes(abs) && (!maxPages || queue.length + seenPages.size < maxPages)) {
+      if (kind === 'internal' && args['crawl'] && (args['crawl-assets'] || isCrawlablePage(abs)) && !seenPages.has(abs) && !queue.includes(abs) && (!maxPages || queue.length + seenPages.size < maxPages)) {
         queue.push(abs);
         totalPages++;
       }
