@@ -256,7 +256,9 @@ async function discoverUrlsFromSitemap(site, args) {
     try { return sameOrigin(u, site); } catch { return false; }
   });
   if (args['max-pages']) urls = urls.slice(0, Number(args['max-pages']));
-  return urls;
+  const pages = urls.filter((u) => isCrawlablePage(u));
+  const files = urls.filter((u) => !isCrawlablePage(u));
+  return { pages, files };
 }
 
 // ── Full-page SEO extraction (runs inside page.evaluate) ───────────────
@@ -386,6 +388,142 @@ async function extractFullPageData(page) {
   });
 }
 
+// ── Bot protection / robots.txt / authentication helpers ───────────────
+function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+function decodeUrlForDisplay(u) { try { return decodeURI(String(u || '')); } catch { return String(u || ''); } }
+function detectBotChallengeHtml(html = '', status = 0) {
+  const s = String(html || '').toLowerCase();
+  const statusCode = Number(status) || 0;
+  const isChallengeStatus = [403, 429, 503].includes(statusCode);
+  // High-confidence phrases from real interstitial/challenge pages. Deliberately narrow --
+  // a bare "cloudflare" or "captcha" substring match false-positives on any normal page that's
+  // merely served via Cloudflare's CDN or embeds a reCAPTCHA/hCaptcha widget on a contact form.
+  const strongPhrases = [
+    'checking your browser before accessing',
+    'please stand by, while we are checking your browser',
+    'attention required! | cloudflare',
+    'just a moment...',
+    'verify you are a human',
+    'verify you are human',
+    'please verify you are a human',
+    'captcha-delivery.com',
+    'hcaptcha-challenge',
+    'cf-turnstile',
+    'ddos protection by',
+  ];
+  const strongMatch = strongPhrases.find((needle) => s.includes(needle));
+  // Generic keywords are only trustworthy alongside a challenge-like HTTP status.
+  const weakCloudflare = isChallengeStatus && s.includes('cloudflare');
+  const weakCaptcha = isChallengeStatus && s.includes('captcha');
+  const detected = Boolean(strongMatch) || isChallengeStatus;
+  let type = 'unknown';
+  if (strongMatch) type = /cloudflare|just a moment|turnstile/.test(strongMatch) ? 'cloudflare' : 'captcha';
+  else if (weakCloudflare) type = 'cloudflare';
+  else if (weakCaptcha) type = 'captcha';
+  else if (isChallengeStatus) type = `http_${statusCode}`;
+  return { detected, type, status: statusCode };
+}
+async function buildRobotsMatcher(startUrl) {
+  try {
+    const robotsUrl = new URL('/robots.txt', startUrl).toString();
+    const text = await fetchText(robotsUrl);
+    const disallows = [];
+    let crawlDelayMs = 0;
+    for (const line of text.split(/\r?\n/g)) {
+      const trimmed = line.trim();
+      const m = /^disallow:\s*(.+)$/i.exec(trimmed);
+      if (m) disallows.push(m[1].trim());
+      const cd = /^crawl-delay:\s*(\d+)$/i.exec(trimmed);
+      if (cd && !crawlDelayMs) crawlDelayMs = Number(cd[1]) * 1000;
+    }
+    function isAllowedUrl(url) {
+      try {
+        const u = new URL(url);
+        const pathWithQuery = `${u.pathname}${u.search || ''}`;
+        for (const rule of disallows) {
+          if (!rule || rule === '/') continue;
+          const normalized = rule.replace(/\*$/, '');
+          if (pathWithQuery.startsWith(normalized) || pathWithQuery.includes(normalized.replace(/\*/g, ''))) return false;
+        }
+        return true;
+      } catch { return true; }
+    }
+    return { isAllowedUrl, crawlDelayMs };
+  } catch { return { isAllowedUrl: null, crawlDelayMs: 0 }; }
+}
+function loadAuthConfig(filePath) {
+  try { return JSON.parse(fs.readFileSync(path.resolve(process.cwd(), filePath), 'utf8')); }
+  catch (e) { throw new Error(`Could not read auth config at ${filePath}: ${String(e?.message || e)}`); }
+}
+function getAuthSettings(args) {
+  let cfg = {};
+  if (args['auth-config']) cfg = loadAuthConfig(args['auth-config']);
+  const httpUsername = args['http-username'] || process.env.USEO_HTTP_USERNAME || cfg.httpUsername || '';
+  const httpPassword = args['http-password'] || process.env.USEO_HTTP_PASSWORD || cfg.httpPassword || '';
+  const loginUrl = args['login-url'] || cfg.loginUrl || '';
+  const username = args['username'] || process.env.USEO_LOGIN_USERNAME || cfg.username || '';
+  const password = args['password'] || process.env.USEO_LOGIN_PASSWORD || cfg.password || '';
+  const usernameSelector = args['username-selector'] || cfg.usernameSelector || "input[name='username'], input[type='email']";
+  const passwordSelector = args['password-selector'] || cfg.passwordSelector || "input[name='password'], input[type='password']";
+  const submitSelector = args['submit-selector'] || cfg.submitSelector || "button[type='submit'], input[type='submit']";
+  const readySelector = args['ready-selector'] || cfg.readySelector || '';
+  const postLoginWaitMs = Number(args['post-login-wait-ms'] || cfg.postLoginWaitMs || 2000);
+  return {
+    httpCredentials: httpUsername || httpPassword ? { username: httpUsername, password: httpPassword } : null,
+    formAuth: loginUrl && username ? { loginUrl, username, password, usernameSelector, passwordSelector, submitSelector, readySelector, postLoginWaitMs } : null,
+  };
+}
+async function maybePerformFormLogin(page, formAuth, slowMode = false) {
+  if (!formAuth) return false;
+  statusMsg('🔐', c.cyan, `Attempting form login at ${formAuth.loginUrl}`);
+  await page.goto(formAuth.loginUrl, { waitUntil: slowMode ? 'domcontentloaded' : 'networkidle', timeout: 90000 });
+  await page.locator(formAuth.usernameSelector).first().fill(formAuth.username);
+  await page.locator(formAuth.passwordSelector).first().fill(formAuth.password || '');
+  if (formAuth.submitSelector) {
+    await Promise.allSettled([
+      page.waitForLoadState(slowMode ? 'domcontentloaded' : 'networkidle', { timeout: 20000 }),
+      page.locator(formAuth.submitSelector).first().click(),
+    ]);
+  } else {
+    await page.keyboard.press('Enter');
+    await page.waitForLoadState(slowMode ? 'domcontentloaded' : 'networkidle', { timeout: 20000 }).catch(() => {});
+  }
+  if (formAuth.readySelector) await page.locator(formAuth.readySelector).first().waitFor({ state: 'visible', timeout: 20000 });
+  else await page.waitForTimeout(formAuth.postLoginWaitMs || 2000);
+  statusMsg('🔐', c.brightGreen, 'Form login step completed.');
+  return true;
+}
+async function gotoWithRetry(page, url, opts = {}) {
+  const { slow = false, retries = 1, backoffMs = 3000, timeoutMs = 90000, cfAware = false } = opts;
+  let lastErr = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const response = await page.goto(url, { waitUntil: slow ? 'domcontentloaded' : 'networkidle', timeout: timeoutMs });
+      await page.waitForTimeout(slow ? 2000 : 800);
+      const bot = cfAware ? detectBotChallengeHtml(await page.content(), response?.status?.() || 0) : { detected: false, type: '', status: 0 };
+      if (bot.detected) {
+        lastErr = new Error(`bot_protection:${bot.type}`);
+        if (attempt < retries) {
+          const delay = backoffMs * Math.pow(2, attempt) + Math.floor(Math.random() * 500);
+          statusMsg('⚠', c.brightYellow, `Bot protection detected (${bot.type}, status ${bot.status}) on ${decodeUrlForDisplay(url)}. Backing off ${Math.ceil(delay / 1000)}s then retrying...`);
+          await sleep(delay);
+          continue;
+        }
+        throw lastErr;
+      }
+      return { response, bot };
+    } catch (e) {
+      lastErr = e;
+      if (attempt < retries) {
+        const delay = backoffMs * Math.pow(2, attempt) + Math.floor(Math.random() * 500);
+        statusMsg('⚠', c.brightYellow, `Navigation failed for ${decodeUrlForDisplay(url)} (${String(e?.message || e)}). Backing off ${Math.ceil(delay / 1000)}s then retrying...`);
+        await sleep(delay);
+      }
+    }
+  }
+  throw lastErr || new Error('navigation_failed');
+}
+
 // ════════════════════════════════════════════════════════════════════════
 // Main
 // ════════════════════════════════════════════════════════════════════════
@@ -398,6 +536,12 @@ const site = args.site;
 const maxPages = args['max-pages'] ? Number(args['max-pages']) : null;
 const runLighthouse = Boolean(args['lighthouse']);
 const maxLinkChecks = args['max-link-checks'] ? Number(args['max-link-checks']) : 250;
+const slowMode = Boolean(args['slow']);
+const cfAware = Boolean(args['cloudflare-aware']);
+const respectRobots = Boolean(args['respect-robots']);
+const retries = args['retries'] ? Number(args['retries']) : (slowMode ? 2 : 1);
+const backoffMs = args['backoff-ms'] ? Number(args['backoff-ms']) : (slowMode ? 8000 : 3000);
+const auth = getAuthSettings(args);
 const outDir = path.resolve('reports/' + runId(site));
 fs.mkdirSync(outDir, { recursive: true });
 
@@ -411,21 +555,33 @@ console.log('');
 console.log(`  ${c.brightMagenta}🎯${c.reset} ${c.bold}Target:${c.reset}     ${c.brightCyan}${site}${c.reset}`);
 console.log(`  ${c.brightMagenta}📁${c.reset} ${c.bold}Output:${c.reset}     ${c.dim}${outDir}${c.reset}`);
 console.log(`  ${c.brightMagenta}🔬${c.reset} ${c.bold}Lighthouse:${c.reset} ${runLighthouse ? `${c.brightGreen}enabled${c.reset}` : `${c.dim}disabled${c.reset}`}`);
+if (slowMode) statusMsg('🐢', c.cyan, 'Running in --slow mode (conservative scan: longer waits + retries).');
+if (cfAware) statusMsg('🛡️', c.cyan, 'Cloudflare-aware challenge detection enabled (--cloudflare-aware).');
+if (respectRobots) statusMsg('🤖', c.cyan, 'Respecting robots.txt Disallow rules (--respect-robots).');
+if (auth.httpCredentials || auth.formAuth) statusMsg('🔐', c.cyan, 'Authenticated mode enabled for protected/staging/dev sites.');
 
 phaseHeader('Phase 1: Setup', '🚀');
 const setupStart = Date.now();
 const origin = new URL(site).origin;
 const canonicalHost = new URL(site).host;
+let robotsCfg = { isAllowedUrl: null, crawlDelayMs: 0 };
+if (respectRobots) robotsCfg = await buildRobotsMatcher(site);
+const crawlDelayMs = args['crawl-delay-ms'] ? Number(args['crawl-delay-ms']) : (robotsCfg.crawlDelayMs || (slowMode ? 1500 : 0));
+if (crawlDelayMs > 0) statusMsg('⏳', c.cyan, `Using crawl delay: ${Math.ceil(crawlDelayMs / 1000)}s between pages.`);
 statusMsg('◐', c.cyan, 'Launching headless browser...');
 const browser = await chromium.launch({ headless: true });
-let context = await browser.newContext();
+const contextOptions = { userAgent: 'Universal-SEO-Audit (Playwright)' };
+if (auth.httpCredentials) contextOptions.httpCredentials = auth.httpCredentials;
+let context = await browser.newContext(contextOptions);
 await installWebMcpCapture(context);
 let page = await context.newPage();
+if (auth.formAuth) await maybePerformFormLogin(page, auth.formAuth, slowMode);
 phaseDone('Browser ready', Date.now() - setupStart);
 
 phaseHeader('Phase 2: URL discovery', '🗺️');
 const discoveryStart = Date.now();
 let discoveredUrls = [];
+let sitemapFileUrls = [];
 if (args['urls-file']) {
   discoveredUrls = fs.readFileSync(path.resolve(args['urls-file']), 'utf8').split(/\r?\n/g).map((s) => s.trim()).filter(Boolean).map(normalizeUrl);
   if (maxPages) discoveredUrls = discoveredUrls.slice(0, maxPages);
@@ -433,8 +589,11 @@ if (args['urls-file']) {
 } else if (!args['crawl']) {
   try {
     statusMsg('◐', c.cyan, 'Fetching sitemap...');
-    discoveredUrls = await discoverUrlsFromSitemap(site, args);
+    const sitemapResult = await discoverUrlsFromSitemap(site, args);
+    discoveredUrls = sitemapResult.pages;
+    sitemapFileUrls = sitemapResult.files;
     statusMsg('🌐', c.brightGreen, `Found ${c.bold}${discoveredUrls.length}${c.reset} URL(s) from sitemap`);
+    if (sitemapFileUrls.length) statusMsg('📎', c.dim, `${c.bold}${sitemapFileUrls.length}${c.reset} non-page file(s) from the sitemap (PDFs, docs, images, etc.) will be checked as assets, not scanned as pages.`);
     fs.writeFileSync(path.join(outDir, 'urls.txt'), discoveredUrls.join('\n') + '\n', 'utf8');
   } catch (e) {
     statusMsg('⚠', c.brightYellow, 'Sitemap discovery failed. Falling back to browser crawl.');
@@ -446,6 +605,11 @@ if (args['urls-file']) {
   if (!args['crawl-assets']) {
     statusMsg('🖼️', c.dim, `Media/asset links (images, PDFs, etc.) are checked but not crawled as pages. Use ${c.bold}--crawl-assets${c.reset} to include them.`);
   }
+}
+if (robotsCfg.isAllowedUrl) {
+  const beforeCount = discoveredUrls.length;
+  discoveredUrls = discoveredUrls.filter((u) => robotsCfg.isAllowedUrl(u));
+  if (discoveredUrls.length < beforeCount) statusMsg('🤖', c.dim, `Filtered ${beforeCount - discoveredUrls.length} URL(s) disallowed by robots.txt.`);
 }
 if (runLighthouse && discoveredUrls.length > 50 && !maxPages) {
   statusMsg('⚠', c.brightYellow, `Lighthouse enabled for ${c.bold}${discoveredUrls.length}${c.reset}${c.brightYellow} URLs — this will take a while. Use --max-pages 10 for a sample.${c.reset}`);
@@ -484,15 +648,42 @@ const descMap = new Map();
 const pageLinksMap = new Map();
 const uniqueLinks = new Map();
 
+if (sitemapFileUrls.length) {
+  statusMsg('📎', c.cyan, `Checking ${c.bold}${sitemapFileUrls.length}${c.reset} non-page file(s) from the sitemap...`);
+  let fileChecked = 0;
+  for (const fileUrl of sitemapFileUrls) {
+    fileChecked++;
+    if (fileChecked % 25 === 0 || fileChecked === sitemapFileUrls.length) progressLine(fileChecked, sitemapFileUrls.length, 'sitemap files checked');
+    if (seenAssets.has(fileUrl)) continue;
+    seenAssets.add(fileUrl);
+    const checked = await checkAsset(fileUrl, canonicalHost);
+    const type = classifyAssetType(fileUrl, 'a', '');
+    assetRows.push({
+      page_url: site, asset_url: fileUrl, asset_type: type, source: 'sitemap',
+      status_code: checked.status, final_url: checked.final_url || '', asset_host: checked.original_host || '',
+      final_host: checked.final_host || '', ok: checked.ok ? 'yes' : 'no', broken: checked.ok ? 'no' : 'yes',
+      host_mismatch: checked.host_mismatch || 'no', www_mismatch: checked.www_mismatch || 'no',
+      non_canonical_host: checked.non_canonical_host || 'no', staging_production_mixup: checked.staging_production_mixup || 'no',
+      protocol_mismatch: checked.protocol_mismatch || 'no', content_type: checked.content_type || ''
+    });
+    if (!checked.ok) {
+      issueRows.push({ page_url: fileUrl, issue_type: 'broken_sitemap_file', severity: 'high', details: `Sitemap-listed file returned ${checked.status || 'network error'}: ${fileUrl}` });
+    }
+  }
+  console.log('');
+}
+
 while (queue.length && (!maxPages || seenPages.size < maxPages)) {
   const url = queue.shift();
   if (seenPages.has(url)) continue;
   seenPages.add(url);
+  const issueRowsStartIdx = issueRows.length;
   if (seenPages.size > 1 && seenPages.size % 25 === 1) {
     await context.close();
-    context = await browser.newContext();
+    context = await browser.newContext(contextOptions);
     await installWebMcpCapture(context);
     page = await context.newPage();
+    if (auth.formAuth) await maybePerformFormLogin(page, auth.formAuth, slowMode);
   }
   const pageStart = Date.now();
   const pageNum = seenPages.size;
@@ -504,12 +695,16 @@ while (queue.length && (!maxPages || seenPages.size < maxPages)) {
   let status = 0;
   let responseHeaders = {};
   try {
-    const res = await page.goto(url, { waitUntil: 'networkidle', timeout: 90000 });
-    status = res?.status?.() || 0;
-    responseHeaders = res?.headers?.() || {};
-  } catch {
+    const nav = await gotoWithRetry(page, url, { slow: slowMode, retries, backoffMs, timeoutMs: 90000, cfAware });
+    status = nav.response?.status?.() || 0;
+    responseHeaders = nav.response?.headers?.() || {};
+  } catch (navError) {
     status = 0;
+    if (String(navError?.message || '').startsWith('bot_protection:')) {
+      issueRows.push({ page_url: url, issue_type: 'bot_protection_blocked', severity: 'critical', details: `Navigation blocked by bot protection: ${String(navError.message)}. Retry with --slow --cloudflare-aware, or use --urls-file with a manually saved URL list.` });
+    }
   }
+  if (crawlDelayMs > 0) await sleep(crawlDelayMs);
 
   let data;
   try {
@@ -545,7 +740,7 @@ while (queue.length && (!maxPages || seenPages.size < maxPages)) {
       if (/^(mailto:|tel:|javascript:)/i.test(abs)) continue;
       const kind = sameOrigin(abs, origin) ? 'internal' : 'external';
       linksForPage.push({ href: abs, kind, anchor_text: normalizeWhitespace(l.text) });
-      if (kind === 'internal' && args['crawl'] && (args['crawl-assets'] || isCrawlablePage(abs)) && !seenPages.has(abs) && !queue.includes(abs) && (!maxPages || queue.length + seenPages.size < maxPages)) {
+      if (kind === 'internal' && args['crawl'] && (args['crawl-assets'] || isCrawlablePage(abs)) && !seenPages.has(abs) && !queue.includes(abs) && (!maxPages || queue.length + seenPages.size < maxPages) && (!robotsCfg.isAllowedUrl || robotsCfg.isAllowedUrl(abs))) {
         queue.push(abs);
         totalPages++;
       }
@@ -793,7 +988,7 @@ while (queue.length && (!maxPages || seenPages.size < maxPages)) {
   const sec = sectionMap.get(section) || { section, page_count: 0, asset_count: 0, issue_count: 0 };
   sec.page_count += 1;
   sec.asset_count += assetsOnPage;
-  sec.issue_count += issueRows.filter((i) => i.page_url === url).length;
+  sec.issue_count += issueRows.length - issueRowsStartIdx;
   sectionMap.set(section, sec);
 
   // ── Lighthouse ───────────────────────────────────────────────────────
@@ -847,7 +1042,7 @@ while (queue.length && (!maxPages || seenPages.size < maxPages)) {
   // ── Per-page summary ─────────────────────────────────────────────────
   const pageElapsed = Date.now() - pageStart;
   pageTimes.push(pageElapsed);
-  const issuesOnPage = issueRows.filter((i) => i.page_url === url).length;
+  const issuesOnPage = issueRows.length - issueRowsStartIdx;
   const issueIcon = issuesOnPage === 0 ? `${c.brightGreen}✔${c.reset}` : issuesOnPage > 5 ? `${c.brightRed}✖${c.reset}` : `${c.brightYellow}●${c.reset}`;
   console.log(`\r\x1b[K  ${issueIcon} ${c.dim}[${pageNum}/${totalPages}]${c.reset} ${c.brightCyan}${formatDuration(pageElapsed)}${c.reset} ${c.dim}│${c.reset} ${c.white}${assetsOnPage}${c.reset} assets ${c.dim}│${c.reset} ${severityColor(issuesOnPage, 5)} issues ${c.dim}│${c.reset} ${c.dim}${shortUrl}${c.reset}`);
 }
@@ -1100,6 +1295,14 @@ console.log(`  ${c.brightCyan}📜${c.reset} ${c.bold}Scripts${c.reset}     ${c.
 console.log(`  ${c.brightCyan}📐${c.reset} ${c.bold}Schema${c.reset}      ${c.brightGreen}${structuredRows.filter((r) => r.schema_present === 'yes').length}${c.reset}${c.dim}/${structuredRows.length} pages with structured data${c.reset}`);
 console.log(`  ${c.brightCyan}⏱️${c.reset}  ${c.bold}Time${c.reset}        ${c.brightYellow}${formatDuration(totalElapsed)}${c.reset}`);
 console.log(`  ${c.brightCyan}📁${c.reset} ${c.bold}Output${c.reset}      ${c.dim}${outDir}${c.reset}`);
+
+const botBlockedCount = issueRows.filter((r) => r.issue_type === 'bot_protection_blocked').length;
+if (botBlockedCount > 0) {
+  console.log('');
+  statusMsg('⚠', c.brightYellow, `${botBlockedCount} page(s) were blocked by bot protection / a WAF challenge.`);
+  statusMsg('💡', c.dim, `Retry with ${c.bold}--slow --cloudflare-aware${c.reset}${c.dim} (add --respect-robots to stay compliant).${c.reset}`);
+  statusMsg('💡', c.dim, `If it's still blocked, save the sitemap manually and run with ${c.bold}--urls-file ./urls.txt${c.reset}${c.dim} instead of live discovery.${c.reset}`);
+}
 console.log('');
 console.log(`  ${rainbow('★ ★ ★')} ${c.dim}Happy auditing!${c.reset} ${rainbow('★ ★ ★')}`);
 console.log('');

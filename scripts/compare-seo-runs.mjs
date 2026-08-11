@@ -27,10 +27,8 @@ function parseCsv(csvText) {
     }
     if (ch === '"') { inQuotes = true; continue; }
     if (ch === ',') { pushField(); continue; }
-    if (ch === '
-') { pushField(); pushRow(); continue; }
-    if (ch === '') { if (csvText[i+1] === '
-') i++; pushField(); pushRow(); continue; }
+    if (ch === '\n') { pushField(); pushRow(); continue; }
+    if (ch === '\r') { if (csvText[i+1] === '\n') i++; pushField(); pushRow(); continue; }
     field += ch;
   }
   pushField(); pushRow();
@@ -38,11 +36,8 @@ function parseCsv(csvText) {
   const headers = rows[0];
   return rows.slice(1).map((r) => Object.fromEntries(headers.map((h, idx) => [h, r[idx] ?? ""])));
 }
-function esc(s){ s=String(s??""); return /[",
-]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s; }
-function writeCsv(rows, columns, outPath){ const body=[columns.join(","), ...rows.map((r)=>columns.map((c)=>esc(r[c])).join(","))].join("
-")+"
-"; fs.writeFileSync(outPath, body, "utf8"); }
+function esc(s){ s=String(s??""); return /[",\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s; }
+function writeCsv(rows, columns, outPath){ const body=[columns.join(","), ...rows.map((r)=>columns.map((c)=>esc(r[c])).join(","))].join("\n")+"\n"; fs.writeFileSync(outPath, body, "utf8"); }
 const args = parseArgs(process.argv);
 if (!args.before || !args.after) {
   console.error("Usage: node scripts/compare-seo-runs.mjs --before reports/run-a --after reports/run-b");
@@ -51,6 +46,7 @@ if (!args.before || !args.after) {
 const beforeDir = path.resolve(process.cwd(), args.before);
 const afterDir = path.resolve(process.cwd(), args.after);
 const outDir = args["out-dir"] ? path.resolve(process.cwd(), args["out-dir"]) : afterDir;
+fs.mkdirSync(outDir, { recursive: true });
 const beforeIssues = parseCsv(fs.readFileSync(path.join(beforeDir, "seo-issues.csv"), "utf8"));
 const afterIssues = parseCsv(fs.readFileSync(path.join(afterDir, "seo-issues.csv"), "utf8"));
 const key = (r) => `${r.page_url}__${r.issue_type}__${r.details}`;
@@ -67,8 +63,7 @@ writeCsv(summaryRows, ["issue_type","before_count","after_count","delta"], path.
 writeCsv(newIssues, Object.keys(newIssues[0] || { page_url:"", issue_type:"", details:"" }), path.join(outDir, "seo-compare-new-issues.csv"));
 writeCsv(resolvedIssues, Object.keys(resolvedIssues[0] || { page_url:"", issue_type:"", details:"" }), path.join(outDir, "seo-compare-resolved-issues.csv"));
 const md = ["# SEO Run Comparison","",`Before: ${beforeDir}`,`After: ${afterDir}`,"",`New issues: ${newIssues.length}`,`Resolved issues: ${resolvedIssues.length}`,`Unchanged issues: ${unchangedIssues.length}`,"","## Issue type deltas",...summaryRows.map((r)=>`- ${r.issue_type}: ${r.before_count} -> ${r.after_count} (${r.delta >= 0 ? "+" : ""}${r.delta})`),"","## New issues",...newIssues.slice(0,20).map((r)=>`- ${r.page_url} — ${r.issue_type} — ${r.details}`),"","## Resolved issues",...resolvedIssues.slice(0,20).map((r)=>`- ${r.page_url} — ${r.issue_type} — ${r.details}`)];
-fs.writeFileSync(path.join(outDir, "seo-compare-summary.md"), md.join("
-"), "utf8");
+fs.writeFileSync(path.join(outDir, "seo-compare-summary.md"), md.join("\n"), "utf8");
 console.log(`Wrote: ${path.join(outDir, "seo-compare-summary.csv")}`);
 console.log(`Wrote: ${path.join(outDir, "seo-compare-new-issues.csv")}`);
 console.log(`Wrote: ${path.join(outDir, "seo-compare-resolved-issues.csv")}`);
