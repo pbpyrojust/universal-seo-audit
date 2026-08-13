@@ -62,6 +62,15 @@ const NON_PAGE_EXTENSION_RE = /\.(jpg|jpeg|png|gif|webp|avif|bmp|ico|svg|tiff?|h
 function isCrawlablePage(u) {
   try { return !NON_PAGE_EXTENSION_RE.test(new URL(u).pathname); } catch { return true; }
 }
+function urlPathDepth(u) {
+  try { return new URL(u).pathname.split('/').filter(Boolean).length; } catch { return Number.POSITIVE_INFINITY; }
+}
+function applyPageScope(urls, { maxPages = null, maxPathDepth = null } = {}) {
+  let scoped = [...urls];
+  if (maxPathDepth != null) scoped = scoped.filter((u) => urlPathDepth(u) <= maxPathDepth);
+  if (maxPages) scoped = scoped.slice(0, maxPages);
+  return scoped;
+}
 function canonicalStatus(pageUrl, canonicalUrl, count) {
   if (!canonicalUrl) return 'missing';
   if (Number(count || 0) > 1) return 'multiple';
@@ -255,7 +264,6 @@ async function discoverUrlsFromSitemap(site, args) {
   urls = [...new Set(urls)].filter((u) => {
     try { return sameOrigin(u, site); } catch { return false; }
   });
-  if (args['max-pages']) urls = urls.slice(0, Number(args['max-pages']));
   const pages = urls.filter((u) => isCrawlablePage(u));
   const files = urls.filter((u) => !isCrawlablePage(u));
   return { pages, files };
@@ -533,8 +541,24 @@ if (!args.site) {
   process.exit(1);
 }
 const site = args.site;
-const maxPages = args['max-pages'] ? Number(args['max-pages']) : null;
-const runLighthouse = Boolean(args['lighthouse']);
+const quickMode = Boolean(args['quick']);
+const liteMode = Boolean(args['lite']) || quickMode;
+const lighthouseRequested = Boolean(args['lighthouse']);
+let maxPages = args['max-pages'] ? Number(args['max-pages']) : null;
+let maxDepth = args['max-depth'] ? Number(args['max-depth']) : null;
+let maxPathDepth = args['max-path-depth'] ? Number(args['max-path-depth']) : null;
+let runLighthouse = lighthouseRequested;
+if (args['top-level']) maxPathDepth = 1;
+if (quickMode) {
+  if (maxPages == null) maxPages = 25;
+  if (maxDepth == null) maxDepth = 1;
+  if (maxPathDepth == null) maxPathDepth = 1;
+  runLighthouse = false;
+} else if (liteMode) {
+  if (maxPages == null) maxPages = 40;
+  if (maxDepth == null) maxDepth = 2;
+  runLighthouse = false;
+}
 const maxLinkChecks = args['max-link-checks'] ? Number(args['max-link-checks']) : 250;
 const slowMode = Boolean(args['slow']);
 const cfAware = Boolean(args['cloudflare-aware']);
@@ -555,6 +579,11 @@ console.log('');
 console.log(`  ${c.brightMagenta}🎯${c.reset} ${c.bold}Target:${c.reset}     ${c.brightCyan}${site}${c.reset}`);
 console.log(`  ${c.brightMagenta}📁${c.reset} ${c.bold}Output:${c.reset}     ${c.dim}${outDir}${c.reset}`);
 console.log(`  ${c.brightMagenta}🔬${c.reset} ${c.bold}Lighthouse:${c.reset} ${runLighthouse ? `${c.brightGreen}enabled${c.reset}` : `${c.dim}disabled${c.reset}`}`);
+if (quickMode) statusMsg('⚡', c.cyan, `Quick mode: top-level URLs only, capped at ${maxPages} pages${args['crawl'] ? `, max crawl depth ${maxDepth}` : ''}, Lighthouse disabled.`);
+else if (liteMode) statusMsg('🪶', c.cyan, `Lite mode: capped at ${maxPages} pages${args['crawl'] ? `, max crawl depth ${maxDepth}` : ''}, Lighthouse disabled.`);
+if (liteMode && lighthouseRequested) statusMsg('⚠', c.brightYellow, '--quick/--lite disables Lighthouse to keep the scan fast and low-memory. Drop the preset if you need Lighthouse scores.');
+if (!liteMode && maxDepth != null && !args['crawl']) statusMsg('⚠', c.brightYellow, '--max-depth only applies to --crawl mode (sitemap-discovered URLs have no crawl depth) and will be ignored.');
+if (!quickMode && maxPathDepth != null) statusMsg('↕', c.cyan, `Path-depth scope: scanning URLs with ${maxPathDepth} path segment${maxPathDepth === 1 ? '' : 's'} or fewer.`);
 if (slowMode) statusMsg('🐢', c.cyan, 'Running in --slow mode (conservative scan: longer waits + retries).');
 if (cfAware) statusMsg('🛡️', c.cyan, 'Cloudflare-aware challenge detection enabled (--cloudflare-aware).');
 if (respectRobots) statusMsg('🤖', c.cyan, 'Respecting robots.txt Disallow rules (--respect-robots).');
@@ -584,7 +613,6 @@ let discoveredUrls = [];
 let sitemapFileUrls = [];
 if (args['urls-file']) {
   discoveredUrls = fs.readFileSync(path.resolve(args['urls-file']), 'utf8').split(/\r?\n/g).map((s) => s.trim()).filter(Boolean).map(normalizeUrl);
-  if (maxPages) discoveredUrls = discoveredUrls.slice(0, maxPages);
   statusMsg('📄', c.cyan, `URL file: ${c.bold}${args['urls-file']}${c.reset} ${c.dim}(${discoveredUrls.length} URLs)${c.reset}`);
 } else if (!args['crawl']) {
   try {
@@ -605,6 +633,17 @@ if (args['urls-file']) {
   if (!args['crawl-assets']) {
     statusMsg('🖼️', c.dim, `Media/asset links (images, PDFs, etc.) are checked but not crawled as pages. Use ${c.bold}--crawl-assets${c.reset} to include them.`);
   }
+}
+const beforeScopePageCount = discoveredUrls.length;
+const beforeScopeFileCount = sitemapFileUrls.length;
+discoveredUrls = applyPageScope(discoveredUrls, { maxPages, maxPathDepth });
+if (maxPathDepth != null) sitemapFileUrls = sitemapFileUrls.filter((u) => urlPathDepth(u) <= maxPathDepth);
+if (beforeScopePageCount !== discoveredUrls.length || beforeScopeFileCount !== sitemapFileUrls.length) {
+  statusMsg('⚡', c.cyan, `Scoped discovery to ${c.bold}${discoveredUrls.length}${c.reset} page URL(s)${maxPathDepth != null ? ` at path depth ${maxPathDepth} or less` : ''}${maxPages ? `, capped at ${maxPages}` : ''}.`);
+}
+if (!discoveredUrls.length) {
+  discoveredUrls = [normalizeUrl(site)];
+  statusMsg('⚠', c.brightYellow, 'Scope filters removed every discovered page URL; scanning the target URL so the audit can still run.');
 }
 if (robotsCfg.isAllowedUrl) {
   const beforeCount = discoveredUrls.length;
@@ -628,7 +667,7 @@ if (runLighthouse) {
   lighthouseChrome = await launchLighthouseChrome();
 }
 const pageTimes = [];
-const queue = [...discoveredUrls];
+const queue = discoveredUrls.map((u) => ({ url: u, depth: 0 }));
 const seenPages = new Set();
 const seenAssets = new Set();
 const pageRows = [];
@@ -674,7 +713,7 @@ if (sitemapFileUrls.length) {
 }
 
 while (queue.length && (!maxPages || seenPages.size < maxPages)) {
-  const url = queue.shift();
+  const { url, depth: currentDepth } = queue.shift();
   if (seenPages.has(url)) continue;
   seenPages.add(url);
   const issueRowsStartIdx = issueRows.length;
@@ -740,8 +779,11 @@ while (queue.length && (!maxPages || seenPages.size < maxPages)) {
       if (/^(mailto:|tel:|javascript:)/i.test(abs)) continue;
       const kind = sameOrigin(abs, origin) ? 'internal' : 'external';
       linksForPage.push({ href: abs, kind, anchor_text: normalizeWhitespace(l.text) });
-      if (kind === 'internal' && args['crawl'] && (args['crawl-assets'] || isCrawlablePage(abs)) && !seenPages.has(abs) && !queue.includes(abs) && (!maxPages || queue.length + seenPages.size < maxPages) && (!robotsCfg.isAllowedUrl || robotsCfg.isAllowedUrl(abs))) {
-        queue.push(abs);
+      const nextDepth = currentDepth + 1;
+      const withinMaxDepth = maxDepth == null || nextDepth <= maxDepth;
+      const withinMaxPathDepth = maxPathDepth == null || urlPathDepth(abs) <= maxPathDepth;
+      if (kind === 'internal' && args['crawl'] && withinMaxDepth && withinMaxPathDepth && (args['crawl-assets'] || isCrawlablePage(abs)) && !seenPages.has(abs) && !queue.some((q) => q.url === abs) && (!maxPages || queue.length + seenPages.size < maxPages) && (!robotsCfg.isAllowedUrl || robotsCfg.isAllowedUrl(abs))) {
+        queue.push({ url: abs, depth: nextDepth });
         totalPages++;
       }
       if (!uniqueLinks.has(abs) && uniqueLinks.size < maxLinkChecks) uniqueLinks.set(abs, kind);

@@ -1,0 +1,6 @@
+# npmjs.org publishing does not require a project .npmrc.
+#
+# For optional GitHub Packages publishing, copy this to .npmrc locally and use
+# a GitHub token with package publish permissions.
+@pbpyrojust:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}

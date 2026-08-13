@@ -24,6 +24,8 @@ build/
 # Env
 .env
 .env.*
+.npmrc
+!.npmrc.example
 
 # Editor
 .vscode/

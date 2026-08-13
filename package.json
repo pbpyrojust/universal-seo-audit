@@ -1,10 +1,23 @@
 {
-  "name": "universal-seo-audit",
-  "version": "1.4.5",
+  "name": "@pbpyrojust/universal-seo-audit",
+  "version": "1.5.0",
+  "private": false,
   "type": "module",
   "packageManager": "pnpm@10.8.0",
   "scripts": {
-    "seo-audit": "node scripts/run-seo-audit.mjs"
+    "seo-audit": "node scripts/run-seo-audit.mjs",
+    "audit": "node scripts/run-seo-audit.mjs",
+    "audit:quick": "node scripts/run-seo-audit.mjs --quick",
+    "audit:lite": "node scripts/run-seo-audit.mjs --lite",
+    "build:urls": "node scripts/build-urls-from-sitemap.mjs",
+    "report": "node scripts/generate-seo-report.mjs",
+    "report:visual": "node scripts/generate-visual-report.mjs",
+    "tickets": "node scripts/generate-seo-tickets.mjs",
+    "compare": "node scripts/compare-seo-runs.mjs",
+    "sitemap:xml-to-urls": "node scripts/convert-sitemap-xml-to-urls.mjs",
+    "cli": "node bin/universal-seo-audit.mjs",
+    "pack:check": "npm pack --dry-run",
+    "release:tag": "node -e \"const p=require('./package.json'); console.log('git tag v'+p.version+' && git push origin v'+p.version)\""
   },
   "dependencies": {
     "chrome-launcher": "^1.1.2",
@@ -12,5 +25,58 @@
     "lighthouse": "^12.8.0",
     "playwright": "^1.57.0"
   },
-  "description": "Technical SEO and asset integrity audit CLI with visual HTML dashboard, branded PDF reporting, and Lighthouse support for development, staging, protected, and noindex sites."
+  "description": "Technical SEO, asset integrity, script inventory, CSP readiness, Lighthouse, and browser-agent readiness audit CLI with branded reports for public, staging, and protected sites.",
+  "author": "Justin Adams (https://justwhat.net)",
+  "homepage": "https://github.com/pbpyrojust/universal-seo-audit#readme",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pbpyrojust/universal-seo-audit.git"
+  },
+  "bugs": {
+    "url": "https://github.com/pbpyrojust/universal-seo-audit/issues"
+  },
+  "keywords": [
+    "seo",
+    "technical-seo",
+    "lighthouse",
+    "playwright",
+    "audit",
+    "sitemap",
+    "cli",
+    "reporting",
+    "csp",
+    "structured-data",
+    "canonical",
+    "hreflang",
+    "staging",
+    "basic-auth",
+    "agentic",
+    "webmcp",
+    "llms.txt",
+    "ai-agents"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "universal-seo-audit": "bin/universal-seo-audit.mjs",
+    "useoaudit": "bin/universal-seo-audit.mjs",
+    "seoaudit": "bin/universal-seo-audit.mjs"
+  },
+  "files": [
+    "bin/",
+    "scripts/*.mjs",
+    "scripts/lib/",
+    "auth-config.example.json",
+    "branding.example.json",
+    "README.md",
+    "PUBLISHING.md",
+    ".npmrc.example",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "preferGlobal": true
 }

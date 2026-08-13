@@ -1,8 +1,22 @@
 # Universal SEO Audit
 
+**Package:** `@pbpyrojust/universal-seo-audit`
+**CLI commands:** `universal-seo-audit`, `seoaudit`, `useoaudit`
 **Version:** 1.5.0
 
 A technical SEO, asset integrity, script inventory, and security audit CLI with visual HTML dashboard, branded PDF reporting, Lighthouse performance scoring, and agentic readiness analysis. Built for development, staging, protected, and noindex sites.
+
+## Runtime expectations
+
+Full-site SEO audits can take a long time. This tool opens pages in Chromium, checks page metadata and assets, validates links, inventories scripts, analyzes structured data, optionally runs Lighthouse, and writes several report formats. A large sitemap, crawl-heavy site, bot protection, slow staging server, authenticated session recycling, or high retry settings can turn a run into hours instead of minutes.
+
+For a quick first pass, use `quick` or `--quick`. It scans only top-level URLs by default, disables Lighthouse, applies lite crawl limits, and caps the run at 25 pages unless you override `--max-pages`.
+
+```bash
+npm exec --package @pbpyrojust/universal-seo-audit -- universal-seo-audit quick --site https://www.example.com
+```
+
+For exhaustive work, use `audit` and tune scope with `--max-pages`, `--top-level`, `--max-path-depth`, `--crawl`, `--max-depth`, `--slow`, `--respect-robots`, and `--cloudflare-aware`.
 
 ## Features
 
@@ -32,7 +46,84 @@ pnpm install
 pnpm exec playwright install --with-deps chromium
 ```
 
+Or with npm:
+
+```bash
+npm install
+npx playwright install --with-deps chromium
+```
+
+## Install from npm
+
+```bash
+npm install -g @pbpyrojust/universal-seo-audit
+npx playwright install --with-deps chromium
+```
+
+Or run it without a global install:
+
+```bash
+npm exec --package @pbpyrojust/universal-seo-audit -- universal-seo-audit quick --site https://www.example.com
+```
+
+## Use in project workflows
+
+Install it as a project dev dependency when you want SEO audits to run from npm scripts, CI jobs, preview deployments, or release checks:
+
+```bash
+npm install --save-dev @pbpyrojust/universal-seo-audit
+npx playwright install chromium
+```
+
+Add scripts to your project's `package.json`:
+
+```json
+{
+  "scripts": {
+    "seo:quick": "universal-seo-audit quick --site https://www.example.com",
+    "seo:full": "universal-seo-audit audit --site https://www.example.com --respect-robots --max-pages 100",
+    "seo:lighthouse": "universal-seo-audit audit --site https://www.example.com --lighthouse --max-pages 10"
+  }
+}
+```
+
+Then run:
+
+```bash
+npm run seo:quick
+```
+
+In automated builds, pass a URL that exists during the job: a staging URL, preview deployment URL, or a localhost server started earlier in the workflow. The package audits a running site; it does not infer a target URL from the project automatically.
+
+### GitHub Actions example
+
+```yaml
+name: SEO Audit
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run seo:quick
+```
+
 ## Quick start
+
+Run a fast top-level pass:
+
+```bash
+universal-seo-audit quick --site https://www.example.com
+```
 
 Run a full audit:
 
@@ -52,6 +143,13 @@ Or use the pnpm shortcut:
 pnpm seo-audit --site https://www.example.com --lighthouse
 ```
 
+Or use the installed CLI:
+
+```bash
+universal-seo-audit audit --site https://www.example.com
+seoaudit audit --site https://www.example.com
+```
+
 ## Main audit command
 
 ```bash
@@ -64,7 +162,12 @@ node scripts/run-seo-audit.mjs --site <url> [options]
 |------|-------------|
 | `--site <url>` | **(required)** Target website URL |
 | `--lighthouse` | Enable Lighthouse performance audits per page |
+| `--quick` | Fast top-level preset: scans only homepage and one-segment paths, caps at 25 pages, uses crawl depth 1 with `--crawl`, and disables Lighthouse. Explicit scope flags override the defaults. |
+| `--lite` | Fast, low-memory preset for large sites: caps at 40 pages, uses crawl depth 2 with `--crawl`, and disables Lighthouse. Explicit `--max-pages`/`--max-depth` override the defaults. |
 | `--max-pages <n>` | Limit the number of pages to scan |
+| `--max-depth <n>` | With `--crawl`, stop following links beyond this many hops from the start page (start page is depth 0). Ignored in sitemap mode, which has no crawl depth. |
+| `--top-level` | Keep only homepage and one-segment paths such as `/about` or `/contact` |
+| `--max-path-depth <n>` | Keep only URLs with path depth `n` or shallower; `1` is top-level |
 | `--crawl` | Use browser link crawling instead of sitemap discovery |
 | `--sitemap-url <url>` | Use a specific sitemap URL |
 | `--urls-file <path>` | Provide a text file of URLs to audit (one per line) |
@@ -103,14 +206,26 @@ Credentials can also be set via environment variables instead of flags: `USEO_HT
 ### Examples
 
 ```bash
+# Fast package-style first pass: top-level pages only, no Lighthouse
+universal-seo-audit quick --site https://www.example.com
+
 # Full sitemap-based scan with Lighthouse
 node scripts/run-seo-audit.mjs --site https://www.example.com --lighthouse
+
+# Top-level pages only, but keep the full reporting workflow
+universal-seo-audit audit --site https://www.example.com --top-level
 
 # Limit scan to 50 pages
 node scripts/run-seo-audit.mjs --site https://www.example.com --max-pages 50
 
 # Use browser crawl mode instead of sitemap discovery
 node scripts/run-seo-audit.mjs --site https://www.example.com --crawl --max-pages 50
+
+# Lite scan: low-memory audit of a large site (40 pages, crawl depth 2, no Lighthouse)
+node scripts/run-seo-audit.mjs --site https://www.example.com --crawl --lite
+
+# Custom depth-limited crawl (e.g. homepage + 3 hops, no page cap)
+node scripts/run-seo-audit.mjs --site https://www.example.com --crawl --max-depth 3
 
 # Use a specific sitemap
 node scripts/run-seo-audit.mjs --site https://www.example.com --sitemap-url https://www.example.com/custom-sitemap.xml
@@ -337,5 +452,6 @@ For sites behind HTTP Basic Auth instead of a login form, use `httpUsername`/`ht
 
 - Some sites trigger client-side redirects, lazy hydration, or page refreshes during DOM extraction. The runner retries extraction once and records a `page_extraction_error` issue instead of crashing the full audit.
 - When `--lighthouse` is enabled on a large sitemap, the scan can take a long time. Use `--max-pages` to limit Lighthouse to a sample if needed.
+- `--crawl` without `--max-pages` will follow every discovered internal link, which on sites with thousands of dynamically generated pages (event pages, user profiles, paginated listings, etc.) can run for hours and risks exhausting memory even with the 8GB heap ceiling this tool sets by default — especially combined with `--lighthouse`. Use `--lite`, or set `--max-pages`/`--max-depth` explicitly, to bound the crawl on large sites.
 - Pages blocked by bot protection are recorded as a `bot_protection_blocked` issue rather than failing the run; see [Bot protection / WAF-protected sites](#bot-protection--waf-protected-sites).
 - With `--auth-config` and a large scan, the browser context is recycled every 25 pages to manage memory; the tool automatically re-runs form login after each recycle so the session stays authenticated.
