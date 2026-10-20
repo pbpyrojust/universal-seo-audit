@@ -1,3 +1,4 @@
+import { aiCrawlerAccess } from './ai-crawlers.mjs';
 const llmsTxtCache = new Map();
 
 function clampScore(value) {
@@ -91,7 +92,7 @@ export async function installWebMcpCapture(context) {
 }
 
 export async function collectAgenticSignals(page, pageUrl, lighthouseRow = {}) {
-  const [dom, llms] = await Promise.all([
+  const [dom, llms, aiAccess] = await Promise.all([
     page.evaluate(() => {
       const controls = Array.from(document.querySelectorAll("button,input,select,textarea,a[href],[role='button'],[role='link'],[role='menuitem'],[role='option'],[tabindex]"));
       const formControls = Array.from(document.querySelectorAll("input,select,textarea"));
@@ -139,7 +140,8 @@ export async function collectAgenticSignals(page, pageUrl, lighthouseRow = {}) {
         images_with_dimensions_count: imagesWithDimensions.length
       };
     }),
-    fetchLlmsTxt(pageUrl)
+    fetchLlmsTxt(pageUrl),
+    aiCrawlerAccess(pageUrl)
   ]);
 
   const formNameRate = dom.form_control_count ? dom.named_form_control_count / dom.form_control_count : 1;
@@ -164,7 +166,9 @@ export async function collectAgenticSignals(page, pageUrl, lighthouseRow = {}) {
   );
   const clsScore = !hasCls ? null : cls <= 0 ? 100 : cls <= 0.1 ? 95 : cls <= 0.25 ? 70 : cls <= 0.5 ? 40 : 15;
   const layoutScore = clampScore(hasCls ? ((clsScore * 0.75) + (imageDimensionRate * 25)) : (imageDimensionRate * 100));
-  const agenticScore = clampScore((webMcpScore * 0.25) + (accessibilityScore * 0.30) + (semanticScore * 0.25) + (layoutScore * 0.20));
+  // AI crawler access (1.6.0): share of AI search/retrieval bots robots.txt allows.
+  const aiAccessScore = aiAccess ? aiAccess.score : 100;
+  const agenticScore = clampScore((webMcpScore * 0.20) + (accessibilityScore * 0.25) + (semanticScore * 0.20) + (layoutScore * 0.15) + (aiAccessScore * 0.20));
 
   return {
     page_url: pageUrl,
@@ -187,6 +191,10 @@ export async function collectAgenticSignals(page, pageUrl, lighthouseRow = {}) {
     llms_txt_bytes: llms.bytes,
     llms_txt_headings: llms.headings,
     llms_txt_links: llms.links,
+    ai_crawler_access_score: aiAccessScore,
+    ai_search_bots_blocked: aiAccess ? aiAccess.blocked_search.join(", ") : "",
+    ai_training_bots_blocked: aiAccess ? aiAccess.blocked_training.join(", ") : "",
+    robots_txt_status: aiAccess ? aiAccess.robots_status : "",
     layout_stability_score: layoutScore,
     cls,
     visible_image_count: dom.visible_image_count,
@@ -214,6 +222,12 @@ export function agenticIssueFindings(row) {
     severity: "medium",
     details: `No usable llms.txt file was found at ${row.llms_txt_url}.`,
     recommendation: "Add /llms.txt with concise platform guidance, important URLs, policies, and limits for LLM and browser-agent use."
+  });
+  if (row.ai_search_bots_blocked) findings.push({
+    issue_type: "ai_search_crawlers_blocked",
+    severity: "high",
+    details: `robots.txt blocks AI search crawlers from this page: ${row.ai_search_bots_blocked}. The page can't be read, cited or recommended in those AI assistants' answers.`,
+    recommendation: "Allow AI search and user-retrieval bots (OAI-SearchBot, ChatGPT-User, Claude-SearchBot, Claude-User, PerplexityBot, Perplexity-User, Applebot) in robots.txt. Training bots (GPTBot, ClaudeBot, Google-Extended, CCBot...) can stay blocked if you prefer; that doesn't affect AI search."
   });
   if (Number(row.layout_stability_score || 0) < 75) findings.push({
     issue_type: "agentic_layout_unstable",

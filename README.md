@@ -2,7 +2,7 @@
 
 **Package:** `@pbpyrojust/universal-seo-audit`
 **CLI commands:** `universal-seo-audit`, `seoaudit`, `useoaudit`
-**Version:** 1.5.0
+**Version:** 1.6.0
 
 A technical SEO, asset integrity, script inventory, and security audit CLI with visual HTML dashboard, branded PDF reporting, Lighthouse performance scoring, and agentic readiness analysis. Built for development, staging, protected, and noindex sites.
 
@@ -25,13 +25,24 @@ For exhaustive work, use `audit` and tune scope with `--max-pages`, `--top-level
 - Asset integrity checks across images, JS, CSS, fonts, and root files
 - Staging/production and `www`/non-`www` asset mismatch detection
 - Script inventory and CSP (Content Security Policy) readiness analysis
-- Lighthouse/Core Web Vitals performance scoring
-- Agentic readiness scoring for browser-native AI agents (WebMCP, accessibility tree, `llms.txt`, layout stability)
+- Lighthouse 13 / Core Web Vitals performance scoring
+- Agentic readiness scoring for browser-native AI agents (WebMCP, accessibility tree, `llms.txt`, AI crawler access, layout stability)
+- AI crawler access: which AI search bots (ChatGPT search, Claude, Perplexity, Apple) and AI training bots (GPTBot, Google-Extended, CCBot and more) robots.txt lets read each page; blocked AI search bots are flagged
 - Branded HTML dashboard and PDF report generation
 - Run-to-run comparison for tracking fixes over time
 - Ticket/backlog generation from audit findings
 - Cloudflare/WAF challenge detection with automatic backoff and retry, plus `robots.txt`-aware crawling
 - HTTP Basic Auth and form-login support for staging and password-protected sites
+
+## What's new in 1.6.0
+
+- **AI crawler access** in the agentic readiness audit: per page, which AI search/retrieval bots and AI training bots robots.txt allows (RFC 9309 matching). New columns in `seo-agentic.csv`: `ai_crawler_access_score`, `ai_search_bots_blocked`, `ai_training_bots_blocked`, `robots_txt_status`; a new `ai_search_crawlers_blocked` finding. Blocking training bots is reported but not penalized.
+- The agentic score now weighs AI crawler access (20%), so scores aren't directly comparable with runs from 1.5.x.
+- Lighthouse 13 and Playwright 1.64.
+
+## Part of Vinny
+
+This scanner is the free, open-source engine behind the SEO checks in [Vinny](https://vinny.justwhat.net) (scheduled scans, keyword and rank tracking, AI visibility, an agent that applies fixes) and the [WordPress plugins](https://wordpress.justwhat.net). Everything here stays free.
 
 ## Requirements
 

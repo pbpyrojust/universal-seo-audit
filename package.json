@@ -1,6 +1,6 @@
 {
   "name": "@pbpyrojust/universal-seo-audit",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "private": false,
   "type": "module",
   "packageManager": "pnpm@10.8.0",
@@ -20,10 +20,10 @@
     "release:tag": "node -e \"const p=require('./package.json'); console.log('git tag v'+p.version+' && git push origin v'+p.version)\""
   },
   "dependencies": {
-    "chrome-launcher": "^1.1.2",
-    "csv-stringify": "^6.6.0",
-    "lighthouse": "^12.8.0",
-    "playwright": "^1.57.0"
+    "chrome-launcher": "^1.2.2",
+    "csv-stringify": "^6.9.0",
+    "lighthouse": "^13.5.0",
+    "playwright": "^1.64.1"
   },
   "description": "Technical SEO, asset integrity, script inventory, CSP readiness, Lighthouse, and browser-agent readiness audit CLI with branded reports for public, staging, and protected sites.",
   "author": "Justin Adams (https://justwhat.net)",

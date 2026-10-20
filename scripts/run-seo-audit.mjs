@@ -1267,7 +1267,7 @@ if (runLighthouse) writeCsv(path.join(outDir, 'seo-lighthouse.csv'),
   lighthouseRows);
 
 writeCsv(path.join(outDir, 'seo-agentic.csv'),
-  ['page_url','agentic_score','agentic_grade','webmcp_protocol_score','webmcp_tools_registered','webmcp_tools_with_schema','webmcp_reference_count','webmcp_tool_names','accessibility_tree_score','form_control_count','named_form_control_count','clickable_count','named_clickable_count','semantic_data_score','llms_txt_present','llms_txt_url','llms_txt_status','llms_txt_bytes','llms_txt_headings','llms_txt_links','layout_stability_score','cls','visible_image_count','images_with_dimensions_count','note'],
+  ['page_url','agentic_score','agentic_grade','webmcp_protocol_score','webmcp_tools_registered','webmcp_tools_with_schema','webmcp_reference_count','webmcp_tool_names','accessibility_tree_score','form_control_count','named_form_control_count','clickable_count','named_clickable_count','semantic_data_score','llms_txt_present','llms_txt_url','llms_txt_status','llms_txt_bytes','llms_txt_headings','llms_txt_links','ai_crawler_access_score','ai_search_bots_blocked','ai_training_bots_blocked','robots_txt_status','layout_stability_score','cls','visible_image_count','images_with_dimensions_count','note'],
   agenticRows);
 
 writeCsv(path.join(outDir, 'seo-scripts.csv'),
