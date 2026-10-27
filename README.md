@@ -42,7 +42,13 @@ For exhaustive work, use `audit` and tune scope with `--max-pages`, `--top-level
 
 ## Part of Vinny
 
-This scanner is the free, open-source engine behind the SEO checks in [Vinny](https://vinny.justwhat.net) (scheduled scans, keyword and rank tracking, AI visibility, an agent that applies fixes) and the [WordPress plugins](https://wordpress.justwhat.net). Everything here stays free.
+This scanner is the free, open-source engine behind the [SEO checks in Vinny](https://vinny.justwhat.net/features/#seo). Everything here stays free. This CLI audits the site itself; it doesn't check where you rank on Google. That, and the other things a one-off command can't do, are in Vinny:
+
+- [Google rank tracking](https://vinny.justwhat.net/features/#seo): weekly top-100 positions for your keywords by country and device, competitor positions, AI Overviews and keyword ideas from Search Console ([getting started](https://vinny.justwhat.net/docs/)). Included on [paid plans](https://vinny.justwhat.net/pricing/): 250, 1,000 or 5,000 keywords.
+- [Scheduled full-site scans](https://vinny.justwhat.net/features/) with history, alerts, fix tickets and [AI fix suggestions](https://vinny.justwhat.net/features/) for titles, descriptions and schema.
+- [AI Visibility](https://vinny.justwhat.net/features/#ai): how ChatGPT, Perplexity, Gemini and Google AI Overviews talk about your brand, as an [add-on](https://vinny.justwhat.net/pricing/#ai-visibility).
+
+Vinny is [free for one site](https://vinny.justwhat.net/pricing/). For WordPress, the [Universal SEO Audit plugin](https://wordpress.justwhat.net/#plugins-heading) is coming soon.
 
 ## Requirements
 
